@@ -4,22 +4,7 @@ A tiny macOS menu-bar app that lists every local LLM you have stored from
 **LM Studio** and the **HuggingFace** CLI cache, with live size, sort, search,
 copy-as-ID, and reveal-in-Finder.
 
-```
-┌─ Search models… ──────────────────────────────────┐
-│                                                   │
-│  LM STUDIO   ·   4                  ↕  🕐  📁    │
-│  [qwen]  Qwen 3.6 35B A3B  ·  GGUF Q6_K   23.4 GB │
-│  [llama] Llama 3.1 8B Instruct  ·  MLX 4bit   ●  4.2 GB │
-│  …                                                │
-│  ──────────────                                   │
-│  HUGGING FACE  ·  9                 ↕  🕐  📁    │
-│  [qwen]  Qwen 3.5 35B A3B   18.1 GB               │
-│  …                                                │
-│  ──────────────                                   │
-│  Total                              112.7 GB      │
-│  Quit Model Hub                              ⌘Q   │
-└───────────────────────────────────────────────────┘
-```
+<img width="501" height="367" alt="Screenshot 2026-04-24 at 4 30 14 PM" src="https://github.com/user-attachments/assets/5d1cf7d9-ebde-4f15-8f9c-dcff0c7b0b8a"/>
 
 ---
 
@@ -146,42 +131,6 @@ filter.
 
 ---
 
-## Design notes
-
-### Why is there no permanent-delete option?
-
-Models are big. Trashing them via `NSWorkspace.recycle` makes a misclick
-recoverable. If you want them gone for real, empty the Trash. (If you'd
-rather wire up a hard delete, swap `recycle(_:completionHandler:)` for
-`FileManager.default.removeItem(atPath:)` in
-`ModelMenuItemView.confirmAndTrash`.)
-
-### Why no HuggingFace "loaded" indicator?
-
-LM Studio runs a known REST API on a known port — easy to ping, easy to
-match to a `publisher/repo` ID. HuggingFace-cached models are consumed
-by whatever tool happens to open them (transformers, mlx-lm,
-llama.cpp, ollama, custom scripts), and there's no daemon to ask.
-Detecting open file handles via `lsof` works in principle but is too
-slow to run on every menu open and would need to be debounced + cached.
-Worth doing later; not worth doing badly.
-
-### Why does the trash icon take 1 second to appear?
-
-So you can fly the cursor over rows without UI flicker every time. The
-hover dwell is canceled the instant you leave, even if the timer
-already fired and the icon already animated in.
-
-### Why doesn't the search bar get a custom background?
-
-`NSSearchField` paints its own rounded bezel via `NSSearchFieldCell`,
-on top of any background you set on the field or its layer. The clean
-fix is to disable the bezel and add a layer-backed pill subview behind
-the field — but the system bezel matches macOS's native search
-controls, so the default is what's checked in.
-
----
-
 ## License
 
-MIT (or whatever you prefer — this is a personal tool).
+MIT

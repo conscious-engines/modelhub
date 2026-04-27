@@ -55,21 +55,35 @@ final class ExploreRowView: NSView {
     private var isHovered = false
     private var sizeBytes: Int64?
 
-    init(model: ParsedModel, sizeBytes: Int64?, width: CGFloat) {
+    init(
+        model: ParsedModel,
+        sizeBytes: Int64?,
+        width: CGFloat,
+        sizeColumnWidth: CGFloat
+    ) {
         self.model = model
         self.sizeBytes = sizeBytes
 
         avatarView = AuthorAvatarView(publisher: model.publisher)
 
         titleLabel = MarqueeLabel(maxWidth: Self.maxTitleWidth)
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        // Title is the only field allowed to compress when the row is
+        // tight. Type and size keep their intrinsic widths.
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         typeField = NSTextField(labelWithString: "")
         typeField.isBezeled = false
         typeField.isEditable = false
         typeField.drawsBackground = false
+        typeField.alignment = .right
         typeField.usesSingleLineMode = true
         typeField.cell?.lineBreakMode = .byClipping
         typeField.setContentHuggingPriority(.required, for: .horizontal)
+        // Required compression resistance means long type labels like
+        // "safetensors B16" or "GGUF Q4_K_M" will never get truncated;
+        // the title takes the squeeze instead.
+        typeField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         sizeField = NSTextField(labelWithString: "")
         sizeField.isBezeled = false
@@ -123,12 +137,17 @@ final class ExploreRowView: NSView {
             downloadButton.widthAnchor.constraint(equalToConstant: Self.downloadButtonSize),
             downloadButton.heightAnchor.constraint(equalToConstant: Self.downloadButtonSize),
 
-            // Size sizes to its intrinsic content (with required hugging
-            // + compression resistance set above so it can't be squeezed).
+            // Size column has FIXED width so its leading is at a
+            // constant position — that's what column-aligns both the
+            // size text and the type's trailing across rows.
+            sizeField.widthAnchor.constraint(equalToConstant: sizeColumnWidth),
             sizeField.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -10),
             sizeField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // Type sits between the title and the size column with intrinsic width.
+            // Type field is INTRINSIC-width with trailing pinned to
+            // size's leading. Right-edges line up; on rows with short
+            // types the field shrinks and the title takes the freed
+            // space (via the lessThanOrEqualTo below).
             typeField.trailingAnchor.constraint(equalTo: sizeField.leadingAnchor, constant: -Self.sizeGap),
             typeField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
@@ -188,9 +207,14 @@ final class ExploreRowView: NSView {
         let typeColor: NSColor = highlighted
             ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.7)
             : .tertiaryLabelColor
+        // Right-align via paragraph style — `NSTextField.alignment` is
+        // ignored once `attributedStringValue` is set without one.
+        let para = NSMutableParagraphStyle()
+        para.alignment = .right
         return NSAttributedString(string: t, attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: typeColor
+            .foregroundColor: typeColor,
+            .paragraphStyle: para
         ])
     }
 
@@ -199,9 +223,12 @@ final class ExploreRowView: NSView {
             ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.8)
             : .tertiaryLabelColor
         let text: String = bytes.map { SizeUtil.format($0) } ?? "—"
+        let para = NSMutableParagraphStyle()
+        para.alignment = .right
         return NSAttributedString(string: text, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: color
+            .foregroundColor: color,
+            .paragraphStyle: para
         ])
     }
 

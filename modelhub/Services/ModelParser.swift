@@ -35,7 +35,8 @@ enum ModelParser {
         publisher: String,
         repo: String,
         path: String,
-        source: ParsedModel.Source
+        source: ParsedModel.Source,
+        tags: [String]? = nil
     ) -> ParsedModel {
         var format = detectFormatFromName(publisher: publisher, repo: repo)
 
@@ -52,6 +53,13 @@ enum ModelParser {
                 continue
             }
             keptTokens.append(tok)
+        }
+
+        // For Explore rows we don't have a local path to scan, but the
+        // HuggingFace API hands us a `tags` array that usually carries
+        // the format ("safetensors", "gguf", "mlx", ...).
+        if format == nil, let tags = tags {
+            format = detectFormatFromTags(tags)
         }
 
         if format == nil {
@@ -100,6 +108,17 @@ enum ModelParser {
         let combined = (publisher + " " + repo).lowercased()
         if combined.contains("gguf") { return "GGUF" }
         if combined.contains("mlx")  { return "MLX" }
+        return nil
+    }
+
+    /// Picks a format out of the HuggingFace `tags` array. GGUF and
+    /// MLX win over a plain `safetensors` tag (a repo can carry both;
+    /// the more specific format is the useful one for the user).
+    private static func detectFormatFromTags(_ tags: [String]) -> String? {
+        let lowered = Set(tags.map { $0.lowercased() })
+        if lowered.contains("gguf") { return "GGUF" }
+        if lowered.contains("mlx")  { return "MLX" }
+        if lowered.contains("safetensors") { return "safetensors" }
         return nil
     }
 

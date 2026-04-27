@@ -94,13 +94,23 @@ final class ModelMenuItemView: NSView {
     ///   - bytes: On-disk size in bytes (rendered on the trailing edge).
     ///   - loaded: Whether to show the pulsing-green "loaded" dot.
     ///   - width: Row width. Should match the menu's overall row width.
-    init(model: ParsedModel, bytes: Int64, loaded: Bool, width: CGFloat) {
+    init(
+        model: ParsedModel,
+        bytes: Int64,
+        loaded: Bool,
+        width: CGFloat,
+        sizeColumnWidth: CGFloat
+    ) {
         self.model = model
         self.loaded = loaded
         self.bytes = bytes
 
         titleLabel = MarqueeLabel(maxWidth: Self.maxTitleWidth)
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        // Title is the only field that's allowed to compress when the
+        // row gets tight. Type and size keep their intrinsic widths so
+        // the trailing columns are always fully visible.
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         dotView = PulsingDotView()
         dotView.isHidden = !loaded
@@ -109,9 +119,14 @@ final class ModelMenuItemView: NSView {
         typeField.isBezeled = false
         typeField.isEditable = false
         typeField.drawsBackground = false
+        typeField.alignment = .right
         typeField.usesSingleLineMode = true
         typeField.cell?.lineBreakMode = .byClipping
         typeField.setContentHuggingPriority(.required, for: .horizontal)
+        // Required compression resistance means a long type label like
+        // "safetensors B16" or "GGUF Q4_K_M" will never get truncated;
+        // the title takes the squeeze instead.
+        typeField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         sizeField = NSTextField(labelWithString: "")
         sizeField.isBezeled = false
@@ -177,15 +192,21 @@ final class ModelMenuItemView: NSView {
             dotView.widthAnchor.constraint(equalToConstant: Self.dotSize),
             dotView.heightAnchor.constraint(equalToConstant: Self.dotSize),
 
-            // Type column has intrinsic width; pinned to size's left edge.
+            // Type field has INTRINSIC width with its trailing pinned to
+            // the size column's leading edge. So type RIGHT-edges align
+            // across rows (column structure preserved) but on rows with
+            // short types the field shrinks — freeing space the title
+            // can extend into via the lessThanOrEqualTo below.
             typeField.trailingAnchor.constraint(equalTo: sizeField.leadingAnchor, constant: -Self.sizeGap),
             typeField.centerYAnchor.constraint(equalTo: centerYAnchor),
             typeField.leadingAnchor.constraint(greaterThanOrEqualTo: dotView.trailingAnchor, constant: Self.typeGap),
 
-            // Size sizes to its intrinsic content (with required hugging
-            // + compression resistance so it can't be squeezed). Trailing
-            // is pinned and animates leftward when trash slides in.
+            // Size column has FIXED width too, so its leading sits at a
+            // constant offset (which is what fixes the type column's
+            // trailing position). Trailing animates leftward when trash
+            // slides in on hover.
             sizeTrailingConstraint,
+            sizeField.widthAnchor.constraint(equalToConstant: sizeColumnWidth),
             sizeField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             trashTrailingConstraint,
@@ -232,9 +253,14 @@ final class ModelMenuItemView: NSView {
         let typeColor: NSColor = highlighted
             ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.7)
             : .tertiaryLabelColor
+        // Right-align via paragraph style — `NSTextField.alignment` is
+        // ignored once `attributedStringValue` is set without one.
+        let para = NSMutableParagraphStyle()
+        para.alignment = .right
         return NSAttributedString(string: t, attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: typeColor
+            .foregroundColor: typeColor,
+            .paragraphStyle: para
         ])
     }
 
@@ -255,9 +281,12 @@ final class ModelMenuItemView: NSView {
         let color: NSColor = highlighted
             ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.8)
             : .tertiaryLabelColor
+        let para = NSMutableParagraphStyle()
+        para.alignment = .right
         return NSAttributedString(string: SizeUtil.format(bytes), attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: color
+            .foregroundColor: color,
+            .paragraphStyle: para
         ])
     }
 

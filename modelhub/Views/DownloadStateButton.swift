@@ -135,7 +135,7 @@ final class DownloadStateButton: NSButton {
             let tot = total > 0 ? SizeUtil.format(total) : "—"
             return "Paused  ·  \(dl) / \(tot)  ·  \(pct)%\nClick to resume"
         case .completed:
-            return "Downloaded — appears in Local on next open"
+            return "Downloaded"
         case .failed(let msg):
             return "Failed: \(msg)\nClick to retry"
         }

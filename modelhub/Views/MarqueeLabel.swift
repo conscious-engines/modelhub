@@ -112,8 +112,16 @@ final class MarqueeLabel: NSView {
         ceil(attributedStringValue.size().width)
     }
 
+    /// The label's currently-laid-out width. Use this for overflow
+    /// decisions instead of `maxWidth` — outer constraints (e.g. a
+    /// `lessThanOrEqualTo` from a sibling column) can compress the
+    /// label below `maxWidth`, and we still need marquee in that case.
+    private var visibleWidth: CGFloat {
+        bounds.width > 0 ? min(bounds.width, maxWidth) : maxWidth
+    }
+
     private var isTextOverflowing: Bool {
-        fullTextWidth > maxWidth + 0.5
+        fullTextWidth > visibleWidth + 0.5
     }
 
     private func setAttributedString(_ value: NSAttributedString) {
@@ -126,7 +134,9 @@ final class MarqueeLabel: NSView {
 
     private func startMarquee() {
         guard !isMarqueeing else { return }
-        let overflow = fullTextWidth - maxWidth
+        // Scroll relative to the visible (laid-out) width, not the
+        // hard maxWidth — handles compression by outer constraints.
+        let overflow = fullTextWidth - visibleWidth
         guard overflow > 0 else { return }
 
         isMarqueeing = true
@@ -140,11 +150,10 @@ final class MarqueeLabel: NSView {
         let returnDuration = scrollDuration / Double(Self.returnSpeedMultiplier)
 
         marqueeTask = Task { @MainActor [weak self] in
-            // Loop until cancelled or marquee state cleared.
+            // First scroll fires immediately on hover (no leading
+            // pause). Subsequent cycles keep the inter-cycle pauses so
+            // the loop has rhythm.
             while true {
-                guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
-                try? await Task.sleep(for: .seconds(Self.pauseDuration))
-
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
                 s.animateLeading(to: -overflow, duration: scrollDuration, timing: .linear)
                 try? await Task.sleep(for: .seconds(scrollDuration))
@@ -155,6 +164,9 @@ final class MarqueeLabel: NSView {
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
                 s.animateLeading(to: 0, duration: returnDuration, timing: .easeOut)
                 try? await Task.sleep(for: .seconds(returnDuration))
+
+                guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
+                try? await Task.sleep(for: .seconds(Self.pauseDuration))
             }
         }
     }

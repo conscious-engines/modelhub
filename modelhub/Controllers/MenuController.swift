@@ -40,6 +40,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private struct RowEntry {
         let item: NSMenuItem
         let model: ParsedModel
+        /// Bytes for this row's model — cached on the entry so
+        /// ``applyFilter(query:)`` can sum the matched subset for the
+        /// Total row without re-querying ``lmEntries``/``hfEntries``.
+        let bytes: Int64
     }
 
     private var rows: [RowEntry] = []
@@ -49,6 +53,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private var lmEmptyItem: NSMenuItem?
     private var hfEmptyItem: NSMenuItem?
     private var searchFieldView: SearchFieldView?
+
+    /// Items in the Local content's footer area, tracked so search-state
+    /// changes can update / hide them without rebuilding the menu.
+    private var totalRowItem: NSMenuItem?
+    private var totalSeparator: NSMenuItem?
+    private var noResultsItem: NSMenuItem?
 
     /// Markers wrapping the per-tab content. Items between (exclusive)
     /// these two separators are owned by the active tab and get
@@ -72,6 +82,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// Cached row width so reorder uses the same layout as the
     /// initial build.
     private var currentRowWidth: CGFloat = 360
+    private var currentSizeColumnWidth: CGFloat = 0
 
     // MARK: - Tab + Explore state
 
@@ -127,6 +138,62 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         super.init()
         menu.delegate = self
         menu.autoenablesItems = false
+
+        // Listen for download completions so a freshly-downloaded model
+        // can appear in Local without needing the user to close + reopen
+        // the menu.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(downloadStateChanged(_:)),
+            name: .downloadStateChanged,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func downloadStateChanged(_ note: Notification) {
+        guard let state = note.userInfo?["state"] as? DownloadState else { return }
+        guard case .completed = state else { return }
+        // Re-scan the local cache so the new model is in our entries map.
+        refreshLocalEntries()
+        // If the user is currently looking at Local, replace its content
+        // in place; if they're on Explore the cache is already up-to-date
+        // and the next tab switch will pick it up.
+        if currentTab == .local {
+            rebuildContent()
+            applyFilter(query: searchQuery)
+        }
+    }
+
+    /// Rescan ``ModelScanner`` outputs and rebuild ``lmEntries`` /
+    /// ``hfEntries`` / ``totalBytesCached``. Mirrors the equivalent
+    /// section of ``rebuild()`` — kept separate so a download-completion
+    /// refresh doesn't have to teardown the whole menu.
+    private func refreshLocalEntries() {
+        let lm = ModelScanner.scanLMStudio()
+        let hf = ModelScanner.scanHuggingFace()
+        let loaded = LiveLoadedChecker.loadedCopyableIDs()
+
+        lmEntries = lm.map { m in
+            ModelEntry(
+                model: m,
+                bytes: SizeUtil.directorySize(at: m.fullPath),
+                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
+                loaded: loaded.contains(m.copyableID)
+            )
+        }
+        hfEntries = hf.map { m in
+            ModelEntry(
+                model: m,
+                bytes: SizeUtil.directorySize(at: m.fullPath),
+                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
+                loaded: false
+            )
+        }
+        totalBytesCached = (lmEntries + hfEntries).map(\.bytes).reduce(0, +)
     }
 
     // MARK: - NSMenuDelegate
@@ -202,11 +269,18 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         let maxSize = (lmEntries + hfEntries)
             .map { ModelMenuItemView.sizeIntrinsicWidth(for: $0.bytes) }
             .max() ?? 30
+        // Size column has a fixed width so size text right-edges
+        // column-align across rows. The type field is intrinsic-width
+        // with its trailing pinned to size's leading, so type
+        // right-edges also column-align — but on rows with short types
+        // the field shrinks and the title gets that space (no big
+        // empty area between title and the type label).
+        currentSizeColumnWidth = ceil(max(40, maxSize + 6))
         let computed = ModelMenuItemView.horizontalPadding
             + maxTitle
             + ModelMenuItemView.dotGap + ModelMenuItemView.dotSize
             + ModelMenuItemView.typeGap + maxType
-            + ModelMenuItemView.sizeGap + maxSize
+            + ModelMenuItemView.sizeGap + currentSizeColumnWidth
             + ModelMenuItemView.horizontalPadding
         currentRowWidth = ceil(max(340, min(580, computed)))
         let rowWidth = currentRowWidth
@@ -341,7 +415,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             let sorted = sortEntries(lmEntries, mode: lmSortMode)
             for entry in sorted {
                 let item = makeModelItem(model: entry.model, bytes: entry.bytes, loaded: entry.loaded, width: rowWidth)
-                rows.append(RowEntry(item: item, model: entry.model))
+                rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
                 items.append(item)
             }
         }
@@ -376,17 +450,30 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             let sorted = sortEntries(hfEntries, mode: hfSortMode)
             for entry in sorted {
                 let item = makeModelItem(model: entry.model, bytes: entry.bytes, loaded: entry.loaded, width: rowWidth)
-                rows.append(RowEntry(item: item, model: entry.model))
+                rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
                 items.append(item)
             }
         }
 
-        items.append(.separator())
+        let totalSep = NSMenuItem.separator()
+        totalSeparator = totalSep
+        items.append(totalSep)
 
-        // Total
+        // Total — initial value is the unfiltered total. ``applyFilter``
+        // mutates it to reflect the matching subset when a search is active.
         let totalItem = NSMenuItem()
         totalItem.view = TotalRowView(bytes: totalBytesCached, width: rowWidth)
         items.append(totalItem)
+        totalRowItem = totalItem
+
+        // "No results found" placeholder — hidden until ``applyFilter``
+        // determines that the active search returns nothing. Sits at the
+        // bottom of the local content so it lands in the same area the
+        // total row used to occupy.
+        let noResults = disabledTextItem("No results found")
+        noResults.isHidden = true
+        items.append(noResults)
+        noResultsItem = noResults
 
         return items
     }
@@ -415,12 +502,14 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
                         publisher: summary.publisher,
                         repo: summary.repo,
                         path: "",
-                        source: .huggingFace
+                        source: .huggingFace,
+                        tags: summary.tags
                     )
                     let view = ExploreRowView(
                         model: parsed,
                         sizeBytes: sizeCache[summary.id],
-                        width: rowWidth
+                        width: rowWidth,
+                        sizeColumnWidth: currentSizeColumnWidth
                     )
                     if let cached = avatarCache[summary.publisher] {
                         view.apply(avatarImage: cached.image, fullName: cached.fullName)
@@ -621,7 +710,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
     private func makeModelItem(model: ParsedModel, bytes: Int64, loaded: Bool, width: CGFloat) -> NSMenuItem {
         let item = NSMenuItem()
-        let view = ModelMenuItemView(model: model, bytes: bytes, loaded: loaded, width: width)
+        let view = ModelMenuItemView(
+            model: model,
+            bytes: bytes,
+            loaded: loaded,
+            width: width,
+            sizeColumnWidth: currentSizeColumnWidth
+        )
         item.view = view
         return item
     }
@@ -710,7 +805,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
                     width: currentRowWidth
                 )
                 menu.insertItem(item, at: insertIdx)
-                rows.append(RowEntry(item: item, model: entry.model))
+                rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
                 insertIdx += 1
             }
         }
@@ -756,11 +851,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
         var lmVisible = 0
         var hfVisible = 0
+        var visibleBytes: Int64 = 0
 
         for row in rows {
             let match = empty || tokens.allSatisfy { row.model.matches($0) }
             row.item.isHidden = !match
             if match {
+                visibleBytes += row.bytes
                 switch row.model.source {
                 case .lmStudio:    lmVisible += 1
                 case .huggingFace: hfVisible += 1
@@ -768,18 +865,42 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             }
         }
 
+        let totalView = totalRowItem?.view as? TotalRowView
+
         if empty {
+            // No filter — restore the unfiltered Local view.
             lmHeaderItem?.isHidden = false
             hfHeaderItem?.isHidden = false
             middleSeparator?.isHidden = false
             lmEmptyItem?.isHidden = false
             hfEmptyItem?.isHidden = false
+            totalSeparator?.isHidden = false
+            totalRowItem?.isHidden = false
+            noResultsItem?.isHidden = true
+            totalView?.update(bytes: totalBytesCached)
+        } else if lmVisible == 0 && hfVisible == 0 {
+            // Search active, nothing matched — collapse the whole local
+            // content area down to a single "No results found" line.
+            lmHeaderItem?.isHidden = true
+            hfHeaderItem?.isHidden = true
+            middleSeparator?.isHidden = true
+            lmEmptyItem?.isHidden = true
+            hfEmptyItem?.isHidden = true
+            totalSeparator?.isHidden = true
+            totalRowItem?.isHidden = true
+            noResultsItem?.isHidden = false
         } else {
+            // Search active with matches — show only the sections that
+            // have matches and a Total reflecting the matched subset.
             lmHeaderItem?.isHidden = (lmVisible == 0)
             hfHeaderItem?.isHidden = (hfVisible == 0)
             middleSeparator?.isHidden = (lmVisible == 0 || hfVisible == 0)
             lmEmptyItem?.isHidden = true
             hfEmptyItem?.isHidden = true
+            totalSeparator?.isHidden = false
+            totalRowItem?.isHidden = false
+            noResultsItem?.isHidden = true
+            totalView?.update(bytes: visibleBytes)
         }
     }
 }

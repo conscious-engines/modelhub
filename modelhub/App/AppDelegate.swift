@@ -30,5 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         controller = MenuController()
         statusItem.menu = controller.menu
+
+        // First-run only: point a popover at the menu bar icon so users
+        // discover that the app lives up there.
+        if let button = statusItem.button {
+            WelcomePopover.showIfNeeded(anchor: button)
+        }
     }
 }

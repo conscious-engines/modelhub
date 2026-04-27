@@ -4,44 +4,7 @@ A macOS menu-bar app for managing every local LLM you've got — and pulling
 new ones from HuggingFace right from the menu bar. Lives alongside
 **LM Studio** and the **HuggingFace** CLI cache without breaking either.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  ┌────────────┬──────────┐                              │
-│  │   Local    │ Explore  │                              │
-│  └────────────┴──────────┘                              │
-│  [ Search models… ]                                     │
-│                                                         │
-│  LM STUDIO   ·   4                          ↕  🕐  📁   │
-│  [qwen]  Qwen 3.6 35B A3B          GGUF Q6_K   23.4 GB  │
-│  [llama] Llama 3.1 8B Instruct  ●  MLX 4bit     4.2 GB  │
-│  …                                                      │
-│  ──────────────                                         │
-│  HUGGING FACE  ·  9                         ↕  🕐  📁   │
-│  [qwen]  Qwen 3.5 35B A3B           safetensors 18.1 GB │
-│  …                                                      │
-│  ──────────────                                         │
-│  Total                                         112.7 GB │
-│  Quit Model Hub                                    ⌘Q   │
-└─────────────────────────────────────────────────────────┘
-```
-
-Switch to **Explore**:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  ┌────────────┬──────────┐                              │
-│  │   Local    │ Explore  │                              │
-│  └────────────┴──────────┘                              │
-│  [ qwen ]                                            ✕  │
-│                                                         │
-│  HUGGINGFACE · RESULTS                                  │
-│  ⓠ [qwen] Qwen 3.6 35B A3B Claude         71.92 GB  ⤓  │
-│  ⓩ [qwen] Qwen 3.6 35B A3B DFlash         42.42 GB  ✓  │
-│  ⓟ [qwen] Qwen 3 Coder 30B A3B  GGUF       1.51 TB  ⤓  │
-│  ⓠ [qwen] Qwen 3 8B                       45.45 GB  ⏸  │  ← downloading
-│  …                                                      │
-└─────────────────────────────────────────────────────────┘
-```
+<img width="1049" height="889" alt="Screenshot 2026-04-27 at 7 37 39 PM" src="https://github.com/user-attachments/assets/fc72a451-5bd0-4bf2-95e9-d5b19ed06e7e" />
 
 ---
 

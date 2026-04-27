@@ -43,13 +43,19 @@ final class ModelMenuItemView: NSView {
     /// Edge length of the trash icon button.
     static let trashSize: CGFloat = 14
     /// Gap between the size field and the trash button when revealed.
-    static let trashGap: CGFloat = 10
+    static let trashGap: CGFloat = 6
     /// Trailing-anchor constant when the trash is hidden (off-screen).
     static let trashHiddenOffset: CGFloat = 18
     /// Trailing-anchor constant when the trash is revealed.
     static let trashVisibleOffset: CGFloat = -horizontalPadding
-    /// Hover dwell time before the trash icon slides in.
-    static let hoverDelay: TimeInterval = 1.0
+    /// Maximum width the title (`[tag] Name`) is allowed to take before
+    /// truncating and unlocking marquee on hover. Generous enough that
+    /// almost all real local titles fit without needing the marquee;
+    /// only stupendously long names from Explore search results actually
+    /// hit the cap.
+    static let maxTitleWidth: CGFloat = 280
+    /// Gap between the loaded-dot and the type column.
+    static let typeGap: CGFloat = 10
 
     // MARK: - Public
 
@@ -61,8 +67,9 @@ final class ModelMenuItemView: NSView {
 
     // MARK: - Subviews
 
-    private let titleField: NSTextField
+    private let titleLabel: MarqueeLabel
     private let dotView: PulsingDotView
+    private let typeField: NSTextField
     private let sizeField: NSTextField
     private let trashButton: NSButton
 
@@ -78,7 +85,6 @@ final class ModelMenuItemView: NSView {
     private var isRowHovered = false
     private var isShowingCopyFeedback = false
     private var copyFeedbackToken = 0
-    private var hoverWorkItem: DispatchWorkItem?
     private var isTrashRevealed = false
 
     // MARK: - Init
@@ -93,23 +99,34 @@ final class ModelMenuItemView: NSView {
         self.loaded = loaded
         self.bytes = bytes
 
-        titleField = NSTextField(labelWithString: "")
-        titleField.isBezeled = false
-        titleField.isEditable = false
-        titleField.drawsBackground = false
-        titleField.usesSingleLineMode = true
-        titleField.cell?.lineBreakMode = .byTruncatingTail
-        titleField.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel = MarqueeLabel(maxWidth: Self.maxTitleWidth)
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         dotView = PulsingDotView()
         dotView.isHidden = !loaded
+
+        typeField = NSTextField(labelWithString: "")
+        typeField.isBezeled = false
+        typeField.isEditable = false
+        typeField.drawsBackground = false
+        typeField.usesSingleLineMode = true
+        typeField.cell?.lineBreakMode = .byClipping
+        typeField.setContentHuggingPriority(.required, for: .horizontal)
 
         sizeField = NSTextField(labelWithString: "")
         sizeField.isBezeled = false
         sizeField.isEditable = false
         sizeField.drawsBackground = false
         sizeField.alignment = .right
+        sizeField.usesSingleLineMode = true
+        sizeField.cell?.lineBreakMode = .byClipping
+        // Hug intrinsic content tightly so there's no empty padding
+        // between the type column and the size text. Compression
+        // resistance is required so layout pressure can't squeeze the
+        // size text below its natural width (which is what was causing
+        // the " GB" suffix to clip in earlier versions).
         sizeField.setContentHuggingPriority(.required, for: .horizontal)
+        sizeField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         trashButton = NSButton()
         trashButton.isBordered = false
@@ -125,16 +142,18 @@ final class ModelMenuItemView: NSView {
 
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
 
-        addSubview(titleField)
+        addSubview(titleLabel)
         addSubview(dotView)
+        addSubview(typeField)
         addSubview(sizeField)
         addSubview(trashButton)
 
         trashButton.target = self
         trashButton.action = #selector(trashButtonClicked(_:))
 
-        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
         dotView.translatesAutoresizingMaskIntoConstraints = false
+        typeField.translatesAutoresizingMaskIntoConstraints = false
         sizeField.translatesAutoresizingMaskIntoConstraints = false
         trashButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -150,17 +169,24 @@ final class ModelMenuItemView: NSView {
         )
 
         NSLayoutConstraint.activate([
-            titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
-            titleField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            dotView.leadingAnchor.constraint(equalTo: titleField.trailingAnchor, constant: Self.dotGap),
+            dotView.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: Self.dotGap),
             dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
             dotView.widthAnchor.constraint(equalToConstant: Self.dotSize),
             dotView.heightAnchor.constraint(equalToConstant: Self.dotSize),
 
+            // Type column has intrinsic width; pinned to size's left edge.
+            typeField.trailingAnchor.constraint(equalTo: sizeField.leadingAnchor, constant: -Self.sizeGap),
+            typeField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            typeField.leadingAnchor.constraint(greaterThanOrEqualTo: dotView.trailingAnchor, constant: Self.typeGap),
+
+            // Size sizes to its intrinsic content (with required hugging
+            // + compression resistance so it can't be squeezed). Trailing
+            // is pinned and animates leftward when trash slides in.
             sizeTrailingConstraint,
             sizeField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            sizeField.leadingAnchor.constraint(greaterThanOrEqualTo: dotView.trailingAnchor, constant: Self.sizeGap),
 
             trashTrailingConstraint,
             trashButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -175,9 +201,10 @@ final class ModelMenuItemView: NSView {
 
     // MARK: - Attributed content
 
-    /// Builds the row's primary attributed title (`[tag] Name · TYPE`).
-    /// Highlighted variants substitute the selected-menu-item text color
-    /// so the row stays legible when hovered.
+    /// Builds the row's title — `[tag] Name`. The type/format label is
+    /// rendered in its own dedicated column (``makeTypeAttributed``) so
+    /// neither the type nor the size gets dragged into the title's
+    /// marquee animation.
     static func makeAttributedTitle(_ m: ParsedModel, highlighted: Bool) -> NSAttributedString {
         let s = NSMutableAttributedString()
 
@@ -185,12 +212,6 @@ final class ModelMenuItemView: NSView {
             ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.75)
             : .secondaryLabelColor
         let nameColor: NSColor = highlighted ? .selectedMenuItemTextColor : .labelColor
-        let sepColor: NSColor = highlighted
-            ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.5)
-            : .quaternaryLabelColor
-        let typeColor: NSColor = highlighted
-            ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.7)
-            : .tertiaryLabelColor
 
         s.append(NSAttributedString(string: "[\(m.familyTag)]", attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
@@ -201,23 +222,32 @@ final class ModelMenuItemView: NSView {
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: nameColor
         ]))
-        if let t = m.typeLabel {
-            s.append(NSAttributedString(string: "   ·  ", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: sepColor
-            ]))
-            s.append(NSAttributedString(string: t, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-                .foregroundColor: typeColor
-            ]))
-        }
         return s
+    }
+
+    /// Builds the standalone type/format label (e.g. `MLX 4bit`).
+    /// Returns an empty attributed string when the model has no type info.
+    static func makeTypeAttributed(_ m: ParsedModel, highlighted: Bool) -> NSAttributedString {
+        guard let t = m.typeLabel else { return NSAttributedString() }
+        let typeColor: NSColor = highlighted
+            ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.7)
+            : .tertiaryLabelColor
+        return NSAttributedString(string: t, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: typeColor
+        ])
     }
 
     /// Intrinsic pixel width of the title for the given model.
     /// Used by ``MenuController`` to size the menu to the widest row.
     static func titleIntrinsicWidth(for model: ParsedModel) -> CGFloat {
         ceil(makeAttributedTitle(model, highlighted: false).size().width)
+    }
+
+    /// Intrinsic width of the type column for the given model.
+    /// `0` if the model has no type info.
+    static func typeIntrinsicWidth(for model: ParsedModel) -> CGFloat {
+        ceil(makeTypeAttributed(model, highlighted: false).size().width)
     }
 
     /// Builds the trailing size label.
@@ -249,9 +279,13 @@ final class ModelMenuItemView: NSView {
 
     private func updateAppearance() {
         if isShowingCopyFeedback {
-            titleField.attributedStringValue = Self.makeCopiedAttributedString(highlighted: isRowHovered)
+            titleLabel.attributedStringValue = Self.makeCopiedAttributedString(highlighted: isRowHovered)
+            // Hide the type column during the feedback flash to keep
+            // attention on the message.
+            typeField.attributedStringValue = NSAttributedString()
         } else {
-            titleField.attributedStringValue = Self.makeAttributedTitle(model, highlighted: isRowHovered)
+            titleLabel.attributedStringValue = Self.makeAttributedTitle(model, highlighted: isRowHovered)
+            typeField.attributedStringValue = Self.makeTypeAttributed(model, highlighted: isRowHovered)
         }
         sizeField.attributedStringValue = Self.makeSizeAttributed(bytes: bytes, highlighted: isRowHovered)
         needsDisplay = true
@@ -282,33 +316,20 @@ final class ModelMenuItemView: NSView {
     override func mouseEntered(with event: NSEvent) {
         isRowHovered = true
         updateAppearance()
-        scheduleTrashReveal()
+        revealTrash()
+        titleLabel.beginHover()
+        HoverCoordinator.enter(self)
     }
 
     override func mouseExited(with event: NSEvent) {
         isRowHovered = false
         updateAppearance()
-        cancelTrashReveal()
+        if isTrashRevealed { hideTrash() }
+        titleLabel.endHover()
+        HoverCoordinator.exit(self)
     }
 
     // MARK: - Trash slide-in
-
-    private func scheduleTrashReveal() {
-        cancelHoverWorkItem()
-        let work = DispatchWorkItem { [weak self] in self?.revealTrash() }
-        hoverWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverDelay, execute: work)
-    }
-
-    private func cancelTrashReveal() {
-        cancelHoverWorkItem()
-        if isTrashRevealed { hideTrash() }
-    }
-
-    private func cancelHoverWorkItem() {
-        hoverWorkItem?.cancel()
-        hoverWorkItem = nil
-    }
 
     private func revealTrash() {
         guard !isTrashRevealed else { return }
@@ -372,18 +393,18 @@ final class ModelMenuItemView: NSView {
     }
 
     private func fadeTitle(to newValue: NSAttributedString) {
-        titleField.wantsLayer = true
+        titleLabel.wantsLayer = true
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.14
             ctx.allowsImplicitAnimation = true
-            titleField.animator().alphaValue = 0
+            titleLabel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             guard let self else { return }
-            self.titleField.attributedStringValue = newValue
+            self.titleLabel.attributedStringValue = newValue
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.14
                 ctx.allowsImplicitAnimation = true
-                self.titleField.animator().alphaValue = 1
+                self.titleLabel.animator().alphaValue = 1
             }
         })
     }
@@ -430,5 +451,19 @@ final class ModelMenuItemView: NSView {
                 err.runModal()
             }
         }
+    }
+}
+
+// MARK: - Hover coordination
+
+extension ModelMenuItemView: HoverableMenuRow {
+    /// Called by ``HoverCoordinator`` when another row claims focus.
+    /// Clears highlight + tucks the trash icon back away if it's out.
+    func clearHoverState() {
+        guard isRowHovered else { return }
+        isRowHovered = false
+        updateAppearance()
+        if isTrashRevealed { hideTrash() }
+        titleLabel.endHover()
     }
 }

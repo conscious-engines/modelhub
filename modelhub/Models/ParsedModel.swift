@@ -62,6 +62,11 @@ struct ParsedModel {
     /// Suitable for placing on the pasteboard.
     var copyableID: String { "\(publisher.lowercased())/\(repo.lowercased())" }
 
+    /// Original-case `publisher/repo` identifier — matches what the
+    /// HuggingFace REST API returns and what the on-disk cache uses
+    /// (`models--{publisher}--{repo}/`). Used for download routing.
+    var canonicalID: String { "\(publisher)/\(repo)" }
+
     /// Stable key for alphabetical ordering. Family-first so models from the
     /// same family cluster together regardless of version-string ordering.
     var sortKey: String { "\(familyTag) \(displayName.lowercased())" }

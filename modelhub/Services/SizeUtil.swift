@@ -13,7 +13,9 @@ import Foundation
 enum SizeUtil {
     private static let formatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
-        f.allowedUnits = [.useGB, .useMB, .useKB, .useBytes]
+        // Without .useTB, multi-terabyte models render as e.g. "1,506.6 GB"
+        // which doesn't fit a sensible size column.
+        f.allowedUnits = [.useTB, .useGB, .useMB, .useKB, .useBytes]
         f.countStyle = .file
         f.isAdaptive = true
         return f

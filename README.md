@@ -11,7 +11,7 @@ A macOS menu-bar app that surfaces every local model you have, lets you
 browse and download from HuggingFace, and gives you the basic management
 tools you need — all from the menu bar.
 
-<img width="1049" height="889" alt="Screenshot" src="https://github.com/user-attachments/assets/fc72a451-5bd0-4bf2-95e9-d5b19ed06e7e" />
+![Demo](./demo.gif)
 
 ---
 

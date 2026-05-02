@@ -38,6 +38,8 @@ final class ExploreRowView: NSView {
     static let typeGap: CGFloat = 10
     /// Gap between the type column and the size column.
     static let sizeGap: CGFloat = 10
+    /// Gap between the optional status badge and size column.
+    static let statusGap: CGFloat = 6
 
     /// The model rendered by this row.
     let model: ParsedModel
@@ -49,20 +51,24 @@ final class ExploreRowView: NSView {
     private let avatarView: AuthorAvatarView
     private let titleLabel: MarqueeLabel
     private let typeField: NSTextField
+    private let statusField: NSTextField
     private let sizeField: NSTextField
     private let downloadButton: DownloadStateButton
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
     private var sizeBytes: Int64?
+    private var compatibility: ExploreCompatibility
 
     init(
         model: ParsedModel,
         sizeBytes: Int64?,
+        compatibility: ExploreCompatibility,
         width: CGFloat,
         sizeColumnWidth: CGFloat
     ) {
         self.model = model
         self.sizeBytes = sizeBytes
+        self.compatibility = compatibility
 
         avatarView = AuthorAvatarView(publisher: model.publisher)
 
@@ -85,6 +91,16 @@ final class ExploreRowView: NSView {
         // the title takes the squeeze instead.
         typeField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        statusField = NSTextField(labelWithString: "")
+        statusField.isBezeled = false
+        statusField.isEditable = false
+        statusField.drawsBackground = false
+        statusField.alignment = .right
+        statusField.usesSingleLineMode = true
+        statusField.cell?.lineBreakMode = .byClipping
+        statusField.setContentHuggingPriority(.required, for: .horizontal)
+        statusField.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         sizeField = NSTextField(labelWithString: "")
         sizeField.isBezeled = false
         sizeField.isEditable = false
@@ -104,6 +120,7 @@ final class ExploreRowView: NSView {
         addSubview(avatarView)
         addSubview(titleLabel)
         addSubview(typeField)
+        addSubview(statusField)
         addSubview(sizeField)
         addSubview(downloadButton)
 
@@ -121,6 +138,7 @@ final class ExploreRowView: NSView {
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         typeField.translatesAutoresizingMaskIntoConstraints = false
+        statusField.translatesAutoresizingMaskIntoConstraints = false
         sizeField.translatesAutoresizingMaskIntoConstraints = false
         downloadButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -144,11 +162,14 @@ final class ExploreRowView: NSView {
             sizeField.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -10),
             sizeField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
+            statusField.trailingAnchor.constraint(equalTo: sizeField.leadingAnchor, constant: -Self.statusGap),
+            statusField.centerYAnchor.constraint(equalTo: centerYAnchor),
+
             // Type field is INTRINSIC-width with trailing pinned to
             // size's leading. Right-edges line up; on rows with short
             // types the field shrinks and the title takes the freed
             // space (via the lessThanOrEqualTo below).
-            typeField.trailingAnchor.constraint(equalTo: sizeField.leadingAnchor, constant: -Self.sizeGap),
+            typeField.trailingAnchor.constraint(equalTo: statusField.leadingAnchor, constant: -Self.sizeGap),
             typeField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             // Title compresses (and marquees on hover) before the type column moves.
@@ -170,6 +191,11 @@ final class ExploreRowView: NSView {
     /// Apply the model's `usedStorage` byte count once the API returns.
     func apply(sizeBytes: Int64) {
         self.sizeBytes = sizeBytes
+        updateAppearance()
+    }
+
+    func apply(compatibility: ExploreCompatibility) {
+        self.compatibility = compatibility
         updateAppearance()
     }
 
@@ -232,12 +258,29 @@ final class ExploreRowView: NSView {
         ])
     }
 
+    static func makeStatusAttributed(_ compatibility: ExploreCompatibility, highlighted: Bool) -> NSAttributedString {
+        guard compatibility == .maybeSlow else { return NSAttributedString() }
+        let color: NSColor = highlighted
+            ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.78)
+            : .systemOrange
+        let para = NSMutableParagraphStyle()
+        para.alignment = .right
+        return NSAttributedString(string: "SLOW", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+            .foregroundColor: color,
+            .paragraphStyle: para,
+        ])
+    }
+
     // MARK: - Appearance
 
     private func updateAppearance() {
         titleLabel.attributedStringValue = Self.makeAttributedTitle(model, highlighted: isHovered)
         typeField.attributedStringValue = Self.makeTypeAttributed(model, highlighted: isHovered)
+        statusField.attributedStringValue = Self.makeStatusAttributed(compatibility, highlighted: isHovered)
         sizeField.attributedStringValue = Self.makeSizeAttributed(bytes: sizeBytes, highlighted: isHovered)
+        toolTip = compatibility.maybeSlowTooltip
+        statusField.toolTip = compatibility.maybeSlowTooltip
         // Tint is owned by DownloadStateButton itself — it resolves the
         // right color for the active state + hover. Just propagate hover.
         downloadButton.rowIsHovered = isHovered

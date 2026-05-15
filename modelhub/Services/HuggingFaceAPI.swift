@@ -24,6 +24,19 @@ import Foundation
 enum HuggingFaceAPI {
     private static let base = URL(string: "https://huggingface.co/api")!
 
+    /// Search request configuration for the public models endpoint.
+    struct SearchOptions {
+        let query: String?
+        let limit: Int
+        let filter: String?
+
+        init(query: String?, limit: Int = 30, filter: String? = nil) {
+            self.query = query
+            self.limit = limit
+            self.filter = filter
+        }
+    }
+
     /// Errors thrown by the API client.
     enum APIError: Error, LocalizedError {
         /// Response wasn't an HTTP response or had a malformed body.
@@ -50,21 +63,22 @@ enum HuggingFaceAPI {
     /// Search public text-generation models.
     ///
     /// - Parameters:
-    ///   - query: Optional search string. `nil` or empty returns the
-    ///     top-by-downloads list (good as a default Explore landing page).
-    ///   - limit: Max results to return. HuggingFace caps at 100.
+    ///   - options: Optional query and server-side filter configuration.
     /// - Returns: Decoded model summaries. Empty array on no matches.
     /// - Throws: ``APIError`` for transport, HTTP, or decoding failures.
-    static func searchModels(query: String?, limit: Int = 30) async throws -> [HFModelSummary] {
+    static func searchModels(options: SearchOptions) async throws -> [HFModelSummary] {
         var components = URLComponents(
             url: base.appendingPathComponent("models"),
             resolvingAgainstBaseURL: false
         )!
         var items: [URLQueryItem] = [
             URLQueryItem(name: "pipeline_tag", value: "text-generation"),
-            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "limit", value: String(options.limit)),
         ]
-        if let q = query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
+        if let filter = options.filter?.trimmingCharacters(in: .whitespacesAndNewlines), !filter.isEmpty {
+            items.append(URLQueryItem(name: "filter", value: filter))
+        }
+        if let q = options.query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
             items.append(URLQueryItem(name: "search", value: q))
         } else {
             items.append(URLQueryItem(name: "sort", value: "downloads"))

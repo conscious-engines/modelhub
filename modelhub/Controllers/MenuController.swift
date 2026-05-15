@@ -30,8 +30,11 @@ import AppKit
 ///      ``Tab/local`` and ``Tab/explore`` while leaving the tab switcher
 ///      and search bar in place (so search-field focus is preserved).
 final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
+    private static let exploreFilterDefaultsKey = "modelhub.exploreFilterMode"
+
     /// The status-bar menu owned by this controller.
     let menu: NSMenu
+    private let machineProfile = MachineProfile.current
 
     // MARK: - Tracking structures
 
@@ -92,6 +95,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// Last typed search query. Persists across tabs and menu opens so
     /// switching tabs preserves user intent.
     private var searchQuery: String = ""
+    private var exploreFilterMode: ExploreFilterMode = .fitThisMac
 
     /// State of the Explore tab's content area.
     private enum ExploreState {
@@ -99,8 +103,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         case idle
         /// API request in flight.
         case loading
-        /// Decoded results from HuggingFace.
-        case results([HFModelSummary])
+        /// Decoded results from HuggingFace plus parsed metadata used
+        /// for compatibility checks and row rendering.
+        case results([ExploreModelCandidate])
         /// Human-readable error message to surface in place of results.
         case error(String)
     }
@@ -115,6 +120,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// avatar / size fetches can update them in place. Reset on each
     /// rebuild of the explore content.
     private var exploreRowsByID: [String: ExploreRowView] = [:]
+    private var exploreCandidatesByID: [String: ExploreModelCandidate] = [:]
 
     /// In-flight enrichment work spawned after each successful search.
     /// Cancelled when a newer search starts.
@@ -130,6 +136,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
     /// Per-repo size cache, keyed by `publisher/repo`.
     private var sizeCache: [String: Int64] = [:]
+    /// Compatibility cache keyed by `publisher/repo`.
+    private var compatibilityCache: [String: ExploreCompatibility] = [:]
 
     // MARK: - Init
 
@@ -138,6 +146,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         super.init()
         menu.delegate = self
         menu.autoenablesItems = false
+        if let raw = UserDefaults.standard.string(forKey: Self.exploreFilterDefaultsKey),
+           let mode = ExploreFilterMode(rawValue: raw) {
+            exploreFilterMode = mode
+        }
 
         // Listen for download completions so a freshly-downloaded model
         // can appear in Local without needing the user to close + reopen
@@ -217,6 +229,22 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
+    }
+
+    private var effectiveExploreFilterMode: ExploreFilterMode {
+        machineProfile.isAppleSilicon ? exploreFilterMode : .allModels
+    }
+
+    private func setExploreFilter(enabled: Bool) {
+        exploreFilterMode = enabled ? .fitThisMac : .allModels
+        UserDefaults.standard.set(exploreFilterMode.rawValue, forKey: Self.exploreFilterDefaultsKey)
+
+        guard currentTab == .explore else { return }
+        if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            triggerExploreFetch(query: searchQuery)
+        } else {
+            updateExploreContentInPlace()
+        }
     }
 
     // MARK: - Build
@@ -483,38 +511,48 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func buildExploreContent(rowWidth: CGFloat) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         exploreRowsByID.removeAll()
+        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let headerText = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "HuggingFace · Top Models"
-            : "HuggingFace · Results"
+        if machineProfile.isAppleSilicon {
+            let toggleItem = NSMenuItem()
+            let toggleView = ExploreFilterToggleView(
+                width: rowWidth,
+                isOn: effectiveExploreFilterMode == .fitThisMac,
+                machineProfile: machineProfile
+            )
+            toggleView.onToggle = { [weak self] isOn in self?.setExploreFilter(enabled: isOn) }
+            toggleItem.view = toggleView
+            items.append(toggleItem)
+        }
+
+        let headerText = makeExploreHeaderText(query: trimmedQuery)
         items.append(makeSectionHeaderItem(text: headerText))
 
         switch exploreState {
         case .idle, .loading:
-            items.append(disabledTextItem("Loading…"))
+            items.append(disabledTextItem(effectiveExploreFilterMode == .fitThisMac ? "Checking what fits this Mac…" : "Loading…"))
 
-        case .results(let summaries):
-            if summaries.isEmpty {
-                items.append(disabledTextItem("No results"))
+        case .results(let candidates):
+            let visibleCandidates = candidates.filter { shouldShow($0, query: trimmedQuery) }
+            if visibleCandidates.isEmpty {
+                if needsPendingFitMessage(candidates, query: trimmedQuery) {
+                    items.append(disabledTextItem("Checking what fits this Mac…"))
+                } else {
+                    items.append(disabledTextItem("No results"))
+                }
             } else {
-                for summary in summaries {
-                    let parsed = ModelParser.parse(
-                        publisher: summary.publisher,
-                        repo: summary.repo,
-                        path: "",
-                        source: .huggingFace,
-                        tags: summary.tags
-                    )
+                for candidate in visibleCandidates {
+                    let summary = candidate.summary
                     let view = ExploreRowView(
-                        model: parsed,
+                        model: candidate.parsedModel,
                         sizeBytes: sizeCache[summary.id],
+                        compatibility: compatibility(for: candidate),
                         width: rowWidth,
                         sizeColumnWidth: currentSizeColumnWidth
                     )
                     if let cached = avatarCache[summary.publisher] {
                         view.apply(avatarImage: cached.image, fullName: cached.fullName)
                     }
-                    // Download routing lives entirely on the row + DownloadManager.
                     let item = NSMenuItem()
                     item.view = view
                     items.append(item)
@@ -527,6 +565,20 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         }
 
         return items
+    }
+
+    private func makeExploreHeaderText(query: String) -> String {
+        guard machineProfile.isAppleSilicon else {
+            return query.isEmpty ? "HuggingFace · Top Models" : "HuggingFace · Results"
+        }
+
+        if effectiveExploreFilterMode == .fitThisMac {
+            return "HuggingFace · Fits \(machineProfile.chipName) · \(machineProfile.memoryGB) GB"
+        }
+
+        return query.isEmpty
+            ? "HuggingFace · All Models · \(machineProfile.chipName)"
+            : "HuggingFace · Results · \(machineProfile.chipName)"
     }
 
     /// Lightweight section header for tabs that don't need the
@@ -568,6 +620,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             let task = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 350_000_000) // 350ms
                 guard !Task.isCancelled, let self else { return }
+                self.exploreCandidatesByID.removeAll()
                 self.exploreState = .loading
                 self.updateExploreContentInPlace()
                 await self.fetchExplore(query: query)
@@ -580,6 +633,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// and on full menu rebuild.
     private func triggerExploreFetch(query: String) {
         exploreSearchTask?.cancel()
+        exploreCandidatesByID.removeAll()
         exploreState = .loading
         updateExploreContentInPlace()
         let task = Task { @MainActor [weak self] in
@@ -595,13 +649,18 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func fetchExplore(query: String) async {
         do {
             let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let results = try await HuggingFaceAPI.searchModels(query: q.isEmpty ? nil : q)
+            let results = try await HuggingFaceAPI.searchModels(options: makeExploreSearchOptions(query: q))
             // Drop the result if the user has moved on.
             guard currentTab == .explore, query == self.searchQuery else { return }
-            exploreState = .results(results)
+            let candidates = results.map(makeExploreCandidate(summary:))
+            exploreCandidatesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+            for candidate in candidates {
+                compatibilityCache[candidate.id] = compatibility(for: candidate)
+            }
+            exploreState = .results(candidates)
             updateExploreContentInPlace()
             // Now that rows are rendered with placeholders, enrich them.
-            enrichExploreResults(results)
+            enrichExploreResults(candidates)
         } catch is CancellationError {
             // Replaced by a newer task — nothing to do.
             return
@@ -613,6 +672,66 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         }
     }
 
+    private func makeExploreSearchOptions(query: String) -> HuggingFaceAPI.SearchOptions {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isEmpty = trimmed.isEmpty
+        let useAppleLandingFilter = effectiveExploreFilterMode == .fitThisMac
+            && machineProfile.isAppleSilicon
+            && isEmpty
+
+        return HuggingFaceAPI.SearchOptions(
+            query: isEmpty ? nil : trimmed,
+            limit: useAppleLandingFilter ? 60 : 30,
+            filter: useAppleLandingFilter ? "apple-silicon" : nil
+        )
+    }
+
+    private func makeExploreCandidate(summary: HFModelSummary) -> ExploreModelCandidate {
+        ExploreModelCandidate(
+            summary: summary,
+            parsedModel: ModelParser.parse(
+                publisher: summary.publisher,
+                repo: summary.repo,
+                path: "",
+                source: .huggingFace,
+                tags: summary.tags
+            )
+        )
+    }
+
+    private func compatibility(for candidate: ExploreModelCandidate) -> ExploreCompatibility {
+        let result = ExploreCompatibilityEvaluator.evaluate(
+            summary: candidate.summary,
+            parsedModel: candidate.parsedModel,
+            usedStorage: sizeCache[candidate.id],
+            machine: machineProfile
+        )
+        compatibilityCache[candidate.id] = result
+        return result
+    }
+
+    private func shouldShow(_ candidate: ExploreModelCandidate, query: String) -> Bool {
+        guard effectiveExploreFilterMode == .fitThisMac else { return true }
+
+        switch compatibility(for: candidate) {
+        case .compatible, .maybeSlow:
+            return true
+        case .unknown:
+            return !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .incompatibleMemory, .incompatibleFormat:
+            return false
+        }
+    }
+
+    private func needsPendingFitMessage(_ candidates: [ExploreModelCandidate], query: String) -> Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard effectiveExploreFilterMode == .fitThisMac, trimmed.isEmpty else { return false }
+
+        return candidates.contains { candidate in
+            compatibility(for: candidate) == .unknown && sizeCache[candidate.id] == nil
+        }
+    }
+
     // MARK: - Explore enrichment (avatars + sizes)
 
     /// After search results render with placeholders, fetch each unique
@@ -620,11 +739,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// Updates the corresponding row views in place as data lands.
     /// Cancels any previously-running enrichment so rapid searches don't
     /// stack up dozens of background requests.
-    private func enrichExploreResults(_ summaries: [HFModelSummary]) {
+    private func enrichExploreResults(_ candidates: [ExploreModelCandidate]) {
         enrichmentTask?.cancel()
 
         // Apply already-cached values before going to the network.
-        for summary in summaries {
+        for candidate in candidates {
+            let summary = candidate.summary
             if let cached = avatarCache[summary.publisher],
                let view = exploreRowsByID[summary.id] {
                 view.apply(avatarImage: cached.image, fullName: cached.fullName)
@@ -633,11 +753,14 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
                let view = exploreRowsByID[summary.id] {
                 view.apply(sizeBytes: cachedSize)
             }
+            if let view = exploreRowsByID[summary.id] {
+                view.apply(compatibility: compatibility(for: candidate))
+            }
         }
 
-        let publishersToFetch = Set(summaries.map { $0.publisher })
+        let publishersToFetch = Set(candidates.map { $0.summary.publisher })
             .filter { !$0.isEmpty && avatarCache[$0] == nil }
-        let idsToFetch = summaries.map { $0.id }.filter { sizeCache[$0] == nil }
+        let idsToFetch = candidates.map(\.id).filter { sizeCache[$0] == nil }
         guard !publishersToFetch.isEmpty || !idsToFetch.isEmpty else { return }
 
         enrichmentTask = Task { [weak self] in
@@ -679,12 +802,40 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         do {
             let detail = try await HuggingFaceAPI.modelDetail(repoID: repoID)
             guard !Task.isCancelled, let bytes = detail.usedStorage else { return }
+            let previousCompatibility = compatibilityCache[repoID]
             sizeCache[repoID] = bytes
+            let candidate = exploreCandidatesByID[repoID]
+            let newCompatibility = candidate.map { compatibility(for: $0) } ?? .unknown
             if let view = exploreRowsByID[repoID] {
                 view.apply(sizeBytes: bytes)
+                view.apply(compatibility: newCompatibility)
+            }
+
+            guard currentTab == .explore,
+                  candidate != nil else { return }
+
+            let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            let becameVisible = previousCompatibility.map {
+                visibility(for: $0, query: query) != visibility(for: newCompatibility, query: query)
+            } ?? (visibility(for: .unknown, query: query) != visibility(for: newCompatibility, query: query))
+
+            if becameVisible || (query.isEmpty && effectiveExploreFilterMode == .fitThisMac) {
+                updateExploreContentInPlace()
             }
         } catch {
             // Silent fail — size stays "—".
+        }
+    }
+
+    private func visibility(for compatibility: ExploreCompatibility, query: String) -> Bool {
+        guard effectiveExploreFilterMode == .fitThisMac else { return true }
+        switch compatibility {
+        case .compatible, .maybeSlow:
+            return true
+        case .unknown:
+            return !query.isEmpty
+        case .incompatibleMemory, .incompatibleFormat:
+            return false
         }
     }
 

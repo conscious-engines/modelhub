@@ -15,4 +15,6 @@ enum Tab {
     case local
     /// Browse + download from HuggingFace.
     case explore
+    /// User preferences for which sources to surface.
+    case settings
 }

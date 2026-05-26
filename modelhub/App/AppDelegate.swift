@@ -31,6 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = MenuController()
         statusItem.menu = controller.menu
 
+        // Boot Sparkle. The shared instance owns the SPUUpdater and
+        // schedules its own launch-time check; we additionally trigger
+        // a background check on every menu open (see MenuController).
+        _ = UpdateManager.shared
+
         // First-run only: point a popover at the menu bar icon so users
         // discover that the app lives up there.
         if let button = statusItem.button {

@@ -128,6 +128,15 @@ final class DownloadManager: NSObject, URLSessionDownloadDelegate {
 
     /// Fetch the file list + commit sha, prepare the cache directories,
     /// then kick off the first file transfer.
+    ///
+    /// Pinned to `@MainActor` to match the manager-wide threading model
+    /// (see the type-level "Threading" doc): `Download`'s properties and
+    /// ``HFCacheWriter/prepareDirectories(repoID:sha:)`` are main-actor
+    /// isolated, and the URLSession's delegate queue is also `.main`,
+    /// so keeping orchestration on main means no locking and no
+    /// cross-actor hops mid-flight. The network fetch itself is fine —
+    /// `await` suspends the actor while it runs.
+    @MainActor
     private func prepareAndStart(download: Download) async {
         do {
             let detail = try await HuggingFaceAPI.modelDetail(repoID: download.repoID)
@@ -144,21 +153,17 @@ final class DownloadManager: NSObject, URLSessionDownloadDelegate {
             // otherwise keep what was passed in.
             try HFCacheWriter.prepareDirectories(repoID: download.repoID, sha: sha)
 
-            await MainActor.run {
-                let state = DownloadState.downloading(
-                    progress: 0,
-                    bytesDownloaded: 0,
-                    totalBytes: download.totalBytes,
-                    bytesPerSecond: 0
-                )
-                download.state = state
-                self.notify(repoID: download.repoID, state: state)
-                self.startCurrentFile(download: download)
-            }
+            let state = DownloadState.downloading(
+                progress: 0,
+                bytesDownloaded: 0,
+                totalBytes: download.totalBytes,
+                bytesPerSecond: 0
+            )
+            download.state = state
+            notify(repoID: download.repoID, state: state)
+            startCurrentFile(download: download)
         } catch {
-            await MainActor.run {
-                self.fail(download: download, message: error.localizedDescription)
-            }
+            fail(download: download, message: error.localizedDescription)
         }
     }
 

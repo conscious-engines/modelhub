@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		88009EAD2F9F9F690084D4EC /* ModelHub.icon in Resources */ = {isa = PBXBuildFile; fileRef = 88009EAC2F9F9F690084D4EC /* ModelHub.icon */; };
+		8880D3802FC5A4670097EEC1 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8880D37F2FC5A4670097EEC1 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -15,9 +16,22 @@
 		88EED7442F97CDF800E85FF1 /* modelhub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = modelhub.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8880D3822FC5A4E80097EEC1 /* Exceptions for "modelhub" folder in "modelhub" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 88EED7432F97CDF800E85FF1 /* modelhub */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		88EED7462F97CDF800E85FF1 /* modelhub */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8880D3822FC5A4E80097EEC1 /* Exceptions for "modelhub" folder in "modelhub" target */,
+			);
 			path = modelhub;
 			sourceTree = "<group>";
 		};
@@ -28,6 +42,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8880D3802FC5A4670097EEC1 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +86,7 @@
 			);
 			name = modelhub;
 			packageProductDependencies = (
+				8880D37F2FC5A4670097EEC1 /* Sparkle */,
 			);
 			productName = modelhub;
 			productReference = 88EED7442F97CDF800E85FF1 /* modelhub.app */;
@@ -100,6 +116,9 @@
 			);
 			mainGroup = 88EED73B2F97CDF800E85FF1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8880D37E2FC5A4670097EEC1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 88EED7452F97CDF800E85FF1 /* Products */;
 			projectDirPath = "";
@@ -259,13 +278,15 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 1.3.0;
 				DEVELOPMENT_TEAM = WAWFDDJJF6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = modelhub/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Model Hub";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -273,7 +294,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.sabesh.modelhub;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -293,13 +314,15 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 1.3.0;
 				DEVELOPMENT_TEAM = WAWFDDJJF6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = modelhub/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Model Hub";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -307,7 +330,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.2;
+				MARKETING_VERSION = 1.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.sabesh.modelhub;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -342,6 +365,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8880D37E2FC5A4670097EEC1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8880D37F2FC5A4670097EEC1 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8880D37E2FC5A4670097EEC1 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 88EED73C2F97CDF800E85FF1 /* Project object */;
 }

@@ -33,6 +33,7 @@ final class SectionHeaderView: NSView {
 
     private let titleField: NSTextField
     private let folderButton: NSButton
+    private let iconView: NSImageView?
 
     /// Invoked when the size sort button is clicked.
     var onSizeSortClicked: (() -> Void)?
@@ -59,10 +60,19 @@ final class SectionHeaderView: NSView {
         menuRef: NSMenu?,
         sizeSortState: SortIconButton.SortState,
         dateSortState: DateSortButton.SortState,
-        showSortControls: Bool
+        showSortControls: Bool,
+        iconName: String? = nil
     ) {
         self.rootPath = rootPath
         self.menuRef = menuRef
+
+        if let iconName, let image = NSImage(named: iconName) {
+            let v = NSImageView(image: image)
+            v.imageScaling = .scaleProportionallyUpOrDown
+            iconView = v
+        } else {
+            iconView = nil
+        }
 
         titleField = NSTextField(labelWithString: "")
         titleField.isBezeled = false
@@ -101,6 +111,7 @@ final class SectionHeaderView: NSView {
 
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
 
+        if let iconView { addSubview(iconView) }
         addSubview(titleField)
         addSubview(sizeButton)
         addSubview(dateButton)
@@ -117,8 +128,22 @@ final class SectionHeaderView: NSView {
         sizeButton.translatesAutoresizingMaskIntoConstraints = false
         dateButton.translatesAutoresizingMaskIntoConstraints = false
 
+        var titleLeading: NSLayoutConstraint
+        if let iconView {
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                iconView.widthAnchor.constraint(equalToConstant: 12),
+                iconView.heightAnchor.constraint(equalToConstant: 12),
+            ])
+            titleLeading = titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6)
+        } else {
+            titleLeading = titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14)
+        }
+
         NSLayoutConstraint.activate([
-            titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            titleLeading,
             titleField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             folderButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),

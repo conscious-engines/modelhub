@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import Sparkle
 
 /// Owns the status-bar menu and orchestrates everything inside it:
 /// scanning, sizing, sort state, search filtering, tab switching, and
@@ -56,6 +57,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private var lmEmptyItem: NSMenuItem?
     private var hfEmptyItem: NSMenuItem?
     private var searchFieldView: SearchFieldView?
+    private var searchItem: NSMenuItem?
 
     /// Items in the Local content's footer area, tracked so search-state
     /// changes can update / hide them without rebuilding the menu.
@@ -69,6 +71,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private var contentTopSeparator: NSMenuItem?
     private var contentBottomSeparator: NSMenuItem?
 
+    /// Top-of-menu "Update available" banner. `nil` while there is no
+    /// pending update; set by ``updateAvailable(_:)`` and ``rebuild()``
+    /// when ``UpdateManager/pendingUpdate`` is non-nil.
+    private var updateRowItem: NSMenuItem?
+    private var updateRowSeparator: NSMenuItem?
+
     // MARK: - Persistent state
 
     /// Sort state — persists across menu opens.
@@ -81,6 +89,14 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private var lmEntries: [ModelEntry] = []
     private var hfEntries: [ModelEntry] = []
     private var totalBytesCached: Int64 = 0
+
+    /// Total bytes for sources the user has enabled in Settings.
+    private var visibleTotalBytes: Int64 {
+        var sum: Int64 = 0
+        if sourcePrefs.lmStudioEnabled { sum += lmEntries.map(\.bytes).reduce(0, +) }
+        if sourcePrefs.huggingFaceEnabled { sum += hfEntries.map(\.bytes).reduce(0, +) }
+        return sum
+    }
 
     /// Cached row width so reorder uses the same layout as the
     /// initial build.
@@ -96,6 +112,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// switching tabs preserves user intent.
     private var searchQuery: String = ""
     private var exploreFilterMode: ExploreFilterMode = .fitThisMac
+    private var sourcePrefs: SourcePreferences = .load()
 
     /// State of the Explore tab's content area.
     private enum ExploreState {
@@ -139,6 +156,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// Compatibility cache keyed by `publisher/repo`.
     private var compatibilityCache: [String: ExploreCompatibility] = [:]
 
+    /// In-memory cache for landing (no-query) Explore fetches, keyed by
+    /// the variant of the request (filter on/off). Lets us paint the
+    /// last-seen result set instantly on menu open while we revalidate
+    /// in the background.
+    private var exploreLandingCache: [String: [HFModelSummary]] = [:]
+
     // MARK: - Init
 
     override init() {
@@ -158,6 +181,21 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             self,
             selector: #selector(downloadStateChanged(_:)),
             name: .downloadStateChanged,
+            object: nil
+        )
+
+        // Sparkle-driven update notifications. The first surfaces the
+        // top-of-menu banner; the second clears any stale banner.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(updateAvailable(_:)),
+            name: .modelhubUpdateAvailable,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(updateNotFound(_:)),
+            name: .modelhubUpdateNotFound,
             object: nil
         )
     }
@@ -221,6 +259,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
     func menuDidOpen(_ menu: NSMenu) {
         menuIsOpen = true
+        // Every menu open kicks off a throttled appcast fetch. If a new
+        // version is found, the SPU delegate posts
+        // `.modelhubUpdateAvailable` and `updateAvailable(_:)` slides the
+        // banner in. Throttling lives inside UpdateManager so rapid menu
+        // opens don't hammer the studio site.
+        UpdateManager.shared.checkInBackground()
         DispatchQueue.main.async { [weak self] in
             guard let sf = self?.searchFieldView?.searchField else { return }
             sf.window?.makeFirstResponder(sf)
@@ -313,6 +357,28 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         currentRowWidth = ceil(max(340, min(580, computed)))
         let rowWidth = currentRowWidth
 
+        // Update banner — only present when Sparkle has surfaced a
+        // pending update. Sits above everything so the user sees it
+        // immediately on menu open. No intro animation here because the
+        // menu itself is appearing fresh; the slide-in plays only when
+        // a check resolves *while* the menu is already open
+        // (see `updateAvailable(_:)`).
+        updateRowItem = nil
+        updateRowSeparator = nil
+        if let pending = UpdateManager.shared.pendingUpdate {
+            let updateItem = makeUpdateRowItem(
+                version: pending.displayVersionString,
+                width: rowWidth,
+                animated: false
+            )
+            menu.addItem(updateItem)
+            updateRowItem = updateItem
+
+            let sep = NSMenuItem.separator()
+            menu.addItem(sep)
+            updateRowSeparator = sep
+        }
+
         // Tab switcher — top of the menu, untouched on tab/state changes
         // so the user can switch back without the menu jumping.
         let tabItem = NSMenuItem()
@@ -329,6 +395,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         searchItem.view = sfView
         menu.addItem(searchItem)
         searchFieldView = sfView
+        self.searchItem = searchItem
 
         // Tab content sits between these two separators. Tab switches and
         // explore-state changes only touch this range; the search bar
@@ -360,6 +427,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             // Always (re-)trigger a fetch on full rebuild so the user sees
             // fresh data each time the menu opens on the Explore tab.
             triggerExploreFetch(query: searchQuery)
+        case .settings:
+            break
         }
     }
 
@@ -374,6 +443,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             applyFilter(query: searchQuery)
         case .explore:
             triggerExploreFetch(query: searchQuery)
+        case .settings:
+            break
         }
     }
 
@@ -384,9 +455,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func rebuildContent() {
         let items: [NSMenuItem]
         switch currentTab {
-        case .local:   items = buildLocalContent(rowWidth: currentRowWidth)
-        case .explore: items = buildExploreContent(rowWidth: currentRowWidth)
+        case .local:    items = buildLocalContent(rowWidth: currentRowWidth)
+        case .explore:  items = buildExploreContent(rowWidth: currentRowWidth)
+        case .settings: items = buildSettingsContent(rowWidth: currentRowWidth)
         }
+        // Search bar is only meaningful on Local + Explore.
+        searchItem?.isHidden = (currentTab == .settings)
         replaceContent(with: items)
     }
 
@@ -416,8 +490,19 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func buildLocalContent(rowWidth: CGFloat) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         rows.removeAll()
+        lmHeaderItem = nil
+        hfHeaderItem = nil
+        middleSeparator = nil
+        lmEmptyItem = nil
+        hfEmptyItem = nil
+
+        if !sourcePrefs.lmStudioEnabled && !sourcePrefs.huggingFaceEnabled {
+            items.append(disabledTextItem("No sources enabled — open Settings to pick one."))
+            return items
+        }
 
         // LM Studio
+        if sourcePrefs.lmStudioEnabled {
         let lmH = NSMenuItem()
         let lmHeader = SectionHeaderView(
             title: "LM Studio",
@@ -427,7 +512,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             menuRef: menu,
             sizeSortState: lmSortMode.sizeButtonState,
             dateSortState: lmSortMode.dateButtonState,
-            showSortControls: lmEntries.count >= 2
+            showSortControls: lmEntries.count >= 2,
+            iconName: "lmstudio"
         )
         lmHeader.onSizeSortClicked = { [weak self] in self?.toggleSizeSort(.lmStudio) }
         lmHeader.onDateSortClicked = { [weak self] in self?.toggleDateSort(.lmStudio) }
@@ -448,11 +534,16 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             }
         }
 
-        let sep = NSMenuItem.separator()
-        middleSeparator = sep
-        items.append(sep)
+        } // end LM Studio block
+
+        if sourcePrefs.lmStudioEnabled && sourcePrefs.huggingFaceEnabled {
+            let sep = NSMenuItem.separator()
+            middleSeparator = sep
+            items.append(sep)
+        }
 
         // Hugging Face
+        if sourcePrefs.huggingFaceEnabled {
         let hfH = NSMenuItem()
         let hfHeader = SectionHeaderView(
             title: "Hugging Face",
@@ -462,7 +553,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             menuRef: menu,
             sizeSortState: hfSortMode.sizeButtonState,
             dateSortState: hfSortMode.dateButtonState,
-            showSortControls: hfEntries.count >= 2
+            showSortControls: hfEntries.count >= 2,
+            iconName: "huggingface"
         )
         hfHeader.onSizeSortClicked = { [weak self] in self?.toggleSizeSort(.huggingFace) }
         hfHeader.onDateSortClicked = { [weak self] in self?.toggleDateSort(.huggingFace) }
@@ -483,6 +575,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             }
         }
 
+        } // end HuggingFace block
+
         let totalSep = NSMenuItem.separator()
         totalSeparator = totalSep
         items.append(totalSep)
@@ -490,7 +584,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         // Total — initial value is the unfiltered total. ``applyFilter``
         // mutates it to reflect the matching subset when a search is active.
         let totalItem = NSMenuItem()
-        totalItem.view = TotalRowView(bytes: totalBytesCached, width: rowWidth)
+        totalItem.view = TotalRowView(bytes: visibleTotalBytes, width: rowWidth)
         items.append(totalItem)
         totalRowItem = totalItem
 
@@ -530,13 +624,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
         switch exploreState {
         case .idle, .loading:
-            items.append(disabledTextItem(effectiveExploreFilterMode == .fitThisMac ? "Checking what fits this Mac…" : "Loading…"))
+            items.append(disabledTextItem(effectiveExploreFilterMode == .fitThisMac ? "Checking what runs on this Mac…" : "Loading…"))
 
         case .results(let candidates):
             let visibleCandidates = candidates.filter { shouldShow($0, query: trimmedQuery) }
             if visibleCandidates.isEmpty {
                 if needsPendingFitMessage(candidates, query: trimmedQuery) {
-                    items.append(disabledTextItem("Checking what fits this Mac…"))
+                    items.append(disabledTextItem("Checking what runs on this Mac…"))
                 } else {
                     items.append(disabledTextItem("No results"))
                 }
@@ -573,12 +667,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         }
 
         if effectiveExploreFilterMode == .fitThisMac {
-            return "HuggingFace · Fits \(machineProfile.chipName) · \(machineProfile.memoryGB) GB"
+            return "HuggingFace · Runs on \(machineProfile.chipName) · \(machineProfile.memoryGB) GB"
         }
 
         return query.isEmpty
-            ? "HuggingFace · All Models · \(machineProfile.chipName)"
-            : "HuggingFace · Results · \(machineProfile.chipName)"
+            ? "HuggingFace · All Models"
+            : "HuggingFace · Results"
     }
 
     /// Lightweight section header for tabs that don't need the
@@ -626,16 +720,37 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
                 await self.fetchExplore(query: query)
             }
             exploreSearchTask = task
+        case .settings:
+            break
         }
     }
 
     /// Kick off a fetch immediately (no debounce). Used on tab entry
     /// and on full menu rebuild.
+    ///
+    /// For the empty-query "landing" view we paint cached results right
+    /// away (if any) and revalidate in the background — the row list
+    /// only re-renders if the API returns a different set of ids.
     private func triggerExploreFetch(query: String) {
         exploreSearchTask?.cancel()
-        exploreCandidatesByID.removeAll()
-        exploreState = .loading
-        updateExploreContentInPlace()
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cacheKey = trimmed.isEmpty ? landingCacheKey() : nil
+
+        if let cacheKey, let cached = exploreLandingCache[cacheKey] {
+            // Paint from cache immediately.
+            let candidates = cached.map(makeExploreCandidate(summary:))
+            exploreCandidatesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+            for c in candidates { compatibilityCache[c.id] = compatibility(for: c) }
+            exploreState = .results(candidates)
+            updateExploreContentInPlace()
+            enrichExploreResults(candidates)
+        } else {
+            exploreCandidatesByID.removeAll()
+            exploreState = .loading
+            updateExploreContentInPlace()
+        }
+
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.fetchExplore(query: query)
@@ -645,13 +760,29 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
     /// Runs the API call and updates the explore section with results
     /// or an error. Bails if the user has switched tabs or typed a new
-    /// query while the request was in flight.
+    /// query while the request was in flight. Also no-ops the UI update
+    /// when the result matches what's already on screen (cache hit
+    /// revalidation), so background refreshes don't flicker rows.
     private func fetchExplore(query: String) async {
         do {
             let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let results = try await HuggingFaceAPI.searchModels(options: makeExploreSearchOptions(query: q))
             // Drop the result if the user has moved on.
             guard currentTab == .explore, query == self.searchQuery else { return }
+
+            // Cache landing results so the next open paints instantly.
+            if q.isEmpty {
+                exploreLandingCache[landingCacheKey()] = results
+            }
+
+            // If we're already showing the same ids in the same order,
+            // skip the re-render — the visible rows are already correct
+            // and their enrichment caches survive across opens.
+            if case .results(let current) = exploreState,
+               current.map(\.id) == results.map(\.id) {
+                return
+            }
+
             let candidates = results.map(makeExploreCandidate(summary:))
             exploreCandidatesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
             for candidate in candidates {
@@ -666,10 +797,20 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             return
         } catch {
             guard currentTab == .explore, query == self.searchQuery else { return }
+            // Don't blow away cached results we're already showing just
+            // because the revalidation hit a network blip.
+            if case .results = exploreState { return }
             let msg = (error as? LocalizedError)?.errorDescription ?? "Couldn't reach HuggingFace."
             exploreState = .error(msg)
             updateExploreContentInPlace()
         }
+    }
+
+    /// Cache key for the landing fetch — varies with the only knob that
+    /// changes the URL when query is empty (the Apple Silicon filter).
+    private func landingCacheKey() -> String {
+        let appleFilter = effectiveExploreFilterMode == .fitThisMac && machineProfile.isAppleSilicon
+        return appleFilter ? "apple-silicon" : "all"
     }
 
     private func makeExploreSearchOptions(query: String) -> HuggingFaceAPI.SearchOptions {
@@ -987,6 +1128,206 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         view.dateButton.sortState = mode.dateButtonState
     }
 
+    // MARK: - Settings content
+
+    private var settingsHFToggleView: SourceToggleRowView?
+    private var settingsLMToggleView: SourceToggleRowView?
+
+    private func buildSettingsContent(rowWidth: CGFloat) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        items.append(makeSectionHeaderItem(text: "Sources"))
+
+        let hfRow = NSMenuItem()
+        let hfView = SourceToggleRowView(
+            width: rowWidth,
+            title: "Hugging Face",
+            isOn: sourcePrefs.huggingFaceEnabled,
+            iconName: "huggingface"
+        )
+        hfView.onToggle = { [weak self] isOn in self?.setSourceEnabled(huggingFace: isOn) }
+        hfRow.view = hfView
+        items.append(hfRow)
+        settingsHFToggleView = hfView
+
+        let lmRow = NSMenuItem()
+        let lmView = SourceToggleRowView(
+            width: rowWidth,
+            title: "LM Studio",
+            isOn: sourcePrefs.lmStudioEnabled,
+            iconName: "lmstudio"
+        )
+        lmView.onToggle = { [weak self] isOn in self?.setSourceEnabled(lmStudio: isOn) }
+        lmRow.view = lmView
+        items.append(lmRow)
+        settingsLMToggleView = lmView
+
+        updateSettingsToggleAvailability()
+
+        // App section — version display + update controls.
+        items.append(NSMenuItem.separator())
+        items.append(makeSectionHeaderItem(text: "App"))
+
+        let manager = UpdateManager.shared
+        if let pending = manager.pendingUpdate {
+            // Inline banner inside Settings mirrors the top-of-menu one.
+            // Same affordance, same destination — we just place it where
+            // the user is already looking when they're poking around in
+            // Settings.
+            items.append(makeUpdateRowItem(
+                version: pending.displayVersionString,
+                width: rowWidth,
+                animated: false
+            ))
+        }
+
+        items.append(makeVersionRowItem(
+            version: manager.currentVersion,
+            build: manager.currentBuild,
+            width: rowWidth
+        ))
+        items.append(makeCheckForUpdatesRowItem(width: rowWidth))
+
+        return items
+    }
+
+    /// Read-only "Version 1.0.0 (12)" row. Build number is shown in
+    /// parentheses so power users can disambiguate between rebuilds of
+    /// the same version during testing.
+    private func makeVersionRowItem(version: String, build: String, width: CGFloat) -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 26))
+
+        let label = NSTextField(labelWithString: "Version")
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = .labelColor
+
+        let value = NSTextField(labelWithString: "\(version) (\(build))")
+        value.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        value.textColor = .secondaryLabelColor
+
+        view.addSubview(label)
+        view.addSubview(value)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        value.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            value.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            value.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        item.view = view
+        return item
+    }
+
+    /// "Check for Updates…" row — a label + trailing button that drives
+    /// ``UpdateManager/checkNow`` (which surfaces Sparkle's standard
+    /// "you're up to date" / "couldn't reach server" UI).
+    private func makeCheckForUpdatesRowItem(width: CGFloat) -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 30))
+
+        let label = NSTextField(labelWithString: "Check for Updates")
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = .labelColor
+
+        let button = NSButton(title: "Check", target: self, action: #selector(checkForUpdatesTapped))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+
+        view.addSubview(label)
+        view.addSubview(button)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            button.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        item.view = view
+        return item
+    }
+
+    @objc private func checkForUpdatesTapped() {
+        UpdateManager.shared.checkNow()
+    }
+
+    /// Disables the checkbox for whichever source is the only one
+    /// currently enabled, so the user can't end up with zero sources.
+    private func updateSettingsToggleAvailability() {
+        let hfOnly = sourcePrefs.huggingFaceEnabled && !sourcePrefs.lmStudioEnabled
+        let lmOnly = sourcePrefs.lmStudioEnabled && !sourcePrefs.huggingFaceEnabled
+        settingsHFToggleView?.checkbox.isEnabled = !hfOnly
+        settingsLMToggleView?.checkbox.isEnabled = !lmOnly
+    }
+
+    private func setSourceEnabled(huggingFace: Bool) {
+        sourcePrefs.huggingFaceEnabled = huggingFace
+        sourcePrefs.save()
+        updateSettingsToggleAvailability()
+    }
+
+    private func setSourceEnabled(lmStudio: Bool) {
+        sourcePrefs.lmStudioEnabled = lmStudio
+        sourcePrefs.save()
+        updateSettingsToggleAvailability()
+    }
+
+    // MARK: - Update banner
+
+    /// Builds the "Update available" row with its tap handler wired
+    /// through to ``UpdateManager/installPending``.
+    private func makeUpdateRowItem(version: String, width: CGFloat, animated: Bool) -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = UpdateAvailableRowView(version: version, width: width, animated: animated)
+        view.onUpdate = { UpdateManager.shared.installPending() }
+        item.view = view
+        return item
+    }
+
+    /// Sparkle found a newer version. If the menu is already open we
+    /// slide the banner in above the tab switcher; otherwise it'll be
+    /// inserted at the top on the next ``rebuild()``.
+    @objc private func updateAvailable(_ note: Notification) {
+        guard menuIsOpen, updateRowItem == nil else { return }
+        let version = (note.userInfo?["version"] as? String) ?? "new version"
+        let item = makeUpdateRowItem(
+            version: version,
+            width: currentRowWidth,
+            animated: true
+        )
+        menu.insertItem(item, at: 0)
+        updateRowItem = item
+
+        let sep = NSMenuItem.separator()
+        menu.insertItem(sep, at: 1)
+        updateRowSeparator = sep
+
+        // Refresh the Settings tab inline block so the same news shows
+        // up there too without waiting for a tab switch.
+        if currentTab == .settings {
+            rebuildContent()
+        }
+    }
+
+    /// A background check confirmed we're on the latest. Drop any stale
+    /// banner so we don't keep promising an update that no longer exists.
+    @objc private func updateNotFound(_ note: Notification) {
+        guard let item = updateRowItem else { return }
+        let itemIdx = menu.index(of: item)
+        if itemIdx >= 0 { menu.removeItem(at: itemIdx) }
+        if let sep = updateRowSeparator {
+            let sepIdx = menu.index(of: sep)
+            if sepIdx >= 0 { menu.removeItem(at: sepIdx) }
+        }
+        updateRowItem = nil
+        updateRowSeparator = nil
+        if currentTab == .settings {
+            rebuildContent()
+        }
+    }
+
     // MARK: - Filter (Local tab only)
 
     /// Applies a whitespace-tokenized AND filter to every Local row,
@@ -1028,7 +1369,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
             totalSeparator?.isHidden = false
             totalRowItem?.isHidden = false
             noResultsItem?.isHidden = true
-            totalView?.update(bytes: totalBytesCached)
+            totalView?.update(bytes: visibleTotalBytes)
         } else if lmVisible == 0 && hfVisible == 0 {
             // Search active, nothing matched — collapse the whole local
             // content area down to a single "No results found" line.

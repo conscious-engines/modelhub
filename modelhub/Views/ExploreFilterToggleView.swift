@@ -16,7 +16,7 @@ final class ExploreFilterToggleView: NSView {
     var onToggle: ((Bool) -> Void)?
 
     init(width: CGFloat, isOn: Bool, machineProfile: MachineProfile) {
-        toggleButton = NSButton(checkboxWithTitle: "Fit This Mac", target: nil, action: nil)
+        toggleButton = NSButton(checkboxWithTitle: "Runs on this Mac", target: nil, action: nil)
         toggleButton.state = isOn ? .on : .off
 
         detailField = NSTextField(labelWithString: "\(machineProfile.chipName) · \(machineProfile.memoryGB) GB")

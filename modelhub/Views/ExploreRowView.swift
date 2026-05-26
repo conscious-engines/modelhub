@@ -309,6 +309,15 @@ final class ExploreRowView: NSView {
         trackingArea = ta
     }
 
+    override func mouseDown(with event: NSEvent) {
+        // Clicks on the download button hit the button's own view first,
+        // so this only fires for the rest of the row — open the model
+        // page on HuggingFace and dismiss the menu.
+        let url = URL(string: "https://huggingface.co/\(canonicalID)")
+        if let url { NSWorkspace.shared.open(url) }
+        enclosingMenuItem?.menu?.cancelTracking()
+    }
+
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
         updateAppearance()

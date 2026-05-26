@@ -24,13 +24,13 @@ final class TabSwitcherView: NSView {
 
     init(width: CGFloat, current: Tab) {
         segmented = NSSegmentedControl(
-            labels: ["Local", "Explore"],
+            labels: ["Local", "Explore", "Settings"],
             trackingMode: .selectOne,
             target: nil,
             action: nil
         )
         segmented.segmentStyle = .capsule
-        segmented.selectedSegment = (current == .local) ? 0 : 1
+        segmented.selectedSegment = Self.segmentIndex(for: current)
 
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
 
@@ -50,7 +50,20 @@ final class TabSwitcherView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     @objc private func segmentChanged(_ sender: NSSegmentedControl) {
-        let tab: Tab = sender.selectedSegment == 0 ? .local : .explore
+        let tab: Tab
+        switch sender.selectedSegment {
+        case 0: tab = .local
+        case 1: tab = .explore
+        default: tab = .settings
+        }
         onSelection?(tab)
+    }
+
+    private static func segmentIndex(for tab: Tab) -> Int {
+        switch tab {
+        case .local: return 0
+        case .explore: return 1
+        case .settings: return 2
+        }
     }
 }

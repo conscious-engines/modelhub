@@ -1,0 +1,43 @@
+{
+  "name": "modelhub",
+  "version": "1.0.0",
+  "description": "Terminal UI for managing local LLMs from LM Studio and HuggingFace",
+  "type": "module",
+  "bin": {
+    "modelhub": "./bin/modelhub.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node bin/modelhub.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "llm",
+    "lm-studio",
+    "huggingface",
+    "model-manager",
+    "tui",
+    "terminal"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "clipboardy": "^4.0.0",
+    "ink": "^5.1.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "open": "^10.1.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,20 @@
+# Xcode build output
+build/
+DerivedData/
+
+# Xcode user-specific files
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode automatic scheme management (user-local, not shared)
+*.xcscheme
+
+# Crash logs
+*.crash

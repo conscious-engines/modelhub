@@ -156,17 +156,17 @@ final class MarqueeLabel: NSView {
             while true {
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
                 s.animateLeading(to: -overflow, duration: scrollDuration, timing: .linear)
-                try? await Task.sleep(for: .seconds(scrollDuration))
+                try? await Task.sleep(nanoseconds: UInt64(scrollDuration * 1_000_000_000))
 
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
-                try? await Task.sleep(for: .seconds(Self.pauseDuration))
+                try? await Task.sleep(nanoseconds: UInt64(Self.pauseDuration * 1_000_000_000))
 
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
                 s.animateLeading(to: 0, duration: returnDuration, timing: .easeOut)
-                try? await Task.sleep(for: .seconds(returnDuration))
+                try? await Task.sleep(nanoseconds: UInt64(returnDuration * 1_000_000_000))
 
                 guard let s = self, s.isMarqueeing, !Task.isCancelled else { return }
-                try? await Task.sleep(for: .seconds(Self.pauseDuration))
+                try? await Task.sleep(nanoseconds: UInt64(Self.pauseDuration * 1_000_000_000))
             }
         }
     }

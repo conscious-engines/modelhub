@@ -51,11 +51,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     }
 
     private var rows: [RowEntry] = []
-    private var lmHeaderItem: NSMenuItem?
-    private var hfHeaderItem: NSMenuItem?
-    private var middleSeparator: NSMenuItem?
-    private var lmEmptyItem: NSMenuItem?
-    private var hfEmptyItem: NSMenuItem?
+    private var headerItemsBySource: [ParsedModel.Source: NSMenuItem] = [:]
+    private var emptyItemsBySource: [ParsedModel.Source: NSMenuItem] = [:]
     private var searchFieldView: SearchFieldView?
     private var searchItem: NSMenuItem?
 
@@ -80,21 +77,28 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     // MARK: - Persistent state
 
     /// Sort state — persists across menu opens.
-    private var lmSortMode: SortMode = .name
-    /// Sort state — persists across menu opens.
-    private var hfSortMode: SortMode = .name
+    private var sortModesBySource: [ParsedModel.Source: SortMode] = [
+        .lmStudio: .name,
+        .huggingFace: .name,
+        .ollama: .name,
+        .anythingLLM: .name,
+        .jan: .name,
+        .gpt4All: .name
+    ]
 
     /// Cached entries so per-section sort can reorder rows without
     /// re-reading the filesystem.
-    private var lmEntries: [ModelEntry] = []
-    private var hfEntries: [ModelEntry] = []
+    private var entriesBySource: [ParsedModel.Source: [ModelEntry]] = [:]
     private var totalBytesCached: Int64 = 0
 
     /// Total bytes for sources the user has enabled in Settings.
     private var visibleTotalBytes: Int64 {
         var sum: Int64 = 0
-        if sourcePrefs.lmStudioEnabled { sum += lmEntries.map(\.bytes).reduce(0, +) }
-        if sourcePrefs.huggingFaceEnabled { sum += hfEntries.map(\.bytes).reduce(0, +) }
+        for source in ParsedModel.Source.allCases {
+            if sourcePrefs.isEnabled(source) {
+                sum += (entriesBySource[source] ?? []).map(\.bytes).reduce(0, +)
+            }
+        }
         return sum
     }
 
@@ -223,27 +227,19 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// section of ``rebuild()`` — kept separate so a download-completion
     /// refresh doesn't have to teardown the whole menu.
     private func refreshLocalEntries() {
-        let lm = ModelScanner.scanLMStudio()
-        let hf = ModelScanner.scanHuggingFace()
         let loaded = LiveLoadedChecker.loadedCopyableIDs()
-
-        lmEntries = lm.map { m in
-            ModelEntry(
-                model: m,
-                bytes: SizeUtil.directorySize(at: m.fullPath),
-                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
-                loaded: loaded.contains(m.copyableID)
-            )
+        for source in ParsedModel.Source.allCases {
+            let models = ModelScanner.scan(source: source)
+            entriesBySource[source] = models.map { m in
+                ModelEntry(
+                    model: m,
+                    bytes: SizeUtil.directorySize(at: m.fullPath),
+                    dateAdded: SizeUtil.dateAdded(at: m.fullPath),
+                    loaded: source == .lmStudio && loaded.contains(m.copyableID)
+                )
+            }
         }
-        hfEntries = hf.map { m in
-            ModelEntry(
-                model: m,
-                bytes: SizeUtil.directorySize(at: m.fullPath),
-                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
-                loaded: false
-            )
-        }
-        totalBytesCached = (lmEntries + hfEntries).map(\.bytes).reduce(0, +)
+        totalBytesCached = entriesBySource.values.flatMap { $0 }.map(\.bytes).reduce(0, +)
     }
 
     // MARK: - NSMenuDelegate
@@ -302,27 +298,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
         // Always scan local — needed for Local tab content and the
         // Total row, which is part of the Local tab.
-        let lm = ModelScanner.scanLMStudio()
-        let hf = ModelScanner.scanHuggingFace()
-        let loaded = LiveLoadedChecker.loadedCopyableIDs()
+        refreshLocalEntries()
 
-        lmEntries = lm.map { m in
-            ModelEntry(
-                model: m,
-                bytes: SizeUtil.directorySize(at: m.fullPath),
-                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
-                loaded: loaded.contains(m.copyableID)
-            )
-        }
-        hfEntries = hf.map { m in
-            ModelEntry(
-                model: m,
-                bytes: SizeUtil.directorySize(at: m.fullPath),
-                dateAdded: SizeUtil.dateAdded(at: m.fullPath),
-                loaded: false
-            )
-        }
-        totalBytesCached = (lmEntries + hfEntries).map(\.bytes).reduce(0, +)
+        let allModels = entriesBySource.values.flatMap { $0 }.map { $0.model }
+        let allEntries = entriesBySource.values.flatMap { $0 }
 
         // Width sized to the widest local row, but the title column is
         // capped — anything wider truncates with an ellipsis and reveals
@@ -334,11 +313,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         // type columns shift left to make room — so when no row is
         // hovered the right edge sits flush against the size column with
         // no empty trailing region.
-        let maxTitleRaw = (lm + hf).map { ModelMenuItemView.titleIntrinsicWidth(for: $0) }.max() ?? 200
+        let maxTitleRaw = allModels.map { ModelMenuItemView.titleIntrinsicWidth(for: $0) }.max() ?? 200
         let maxTitle = min(maxTitleRaw, ModelMenuItemView.maxTitleWidth)
-        let maxType = (lm + hf).map { ModelMenuItemView.typeIntrinsicWidth(for: $0) }.max() ?? 0
+        let maxType = allModels.map { ModelMenuItemView.typeIntrinsicWidth(for: $0) }.max() ?? 0
         // Tight column based on the actual widest size text in the data.
-        let maxSize = (lmEntries + hfEntries)
+        let maxSize = allEntries
             .map { ModelMenuItemView.sizeIntrinsicWidth(for: $0.bytes) }
             .max() ?? 30
         // Size column has a fixed width so size text right-edges
@@ -490,92 +469,55 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func buildLocalContent(rowWidth: CGFloat) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         rows.removeAll()
-        lmHeaderItem = nil
-        hfHeaderItem = nil
-        middleSeparator = nil
-        lmEmptyItem = nil
-        hfEmptyItem = nil
+        headerItemsBySource.removeAll()
+        emptyItemsBySource.removeAll()
 
-        if !sourcePrefs.lmStudioEnabled && !sourcePrefs.huggingFaceEnabled {
+        let enabledSources = ParsedModel.Source.allCases.filter { sourcePrefs.isEnabled($0) }
+
+        if enabledSources.isEmpty {
             items.append(disabledTextItem("No sources enabled — open Settings to pick one."))
             return items
         }
 
-        // LM Studio
-        if sourcePrefs.lmStudioEnabled {
-        let lmH = NSMenuItem()
-        let lmHeader = SectionHeaderView(
-            title: "LM Studio",
-            count: lmEntries.count,
-            rootPath: ModelPaths.lmStudioRoot,
-            width: rowWidth,
-            menuRef: menu,
-            sizeSortState: lmSortMode.sizeButtonState,
-            dateSortState: lmSortMode.dateButtonState,
-            showSortControls: lmEntries.count >= 2,
-            iconName: "lmstudio"
-        )
-        lmHeader.onSizeSortClicked = { [weak self] in self?.toggleSizeSort(.lmStudio) }
-        lmHeader.onDateSortClicked = { [weak self] in self?.toggleDateSort(.lmStudio) }
-        lmH.view = lmHeader
-        items.append(lmH)
-        lmHeaderItem = lmH
+        for (index, source) in enabledSources.enumerated() {
+            if index > 0 {
+                items.append(NSMenuItem.separator())
+            }
 
-        if lmEntries.isEmpty {
-            let empty = disabledTextItem("No models")
-            lmEmptyItem = empty
-            items.append(empty)
-        } else {
-            let sorted = sortEntries(lmEntries, mode: lmSortMode)
-            for entry in sorted {
-                let item = makeModelItem(model: entry.model, bytes: entry.bytes, loaded: entry.loaded, width: rowWidth)
-                rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
-                items.append(item)
+            let sourceEntries = entriesBySource[source] ?? []
+            let sortMode = sortModesBySource[source] ?? .name
+
+            let hfH = NSMenuItem()
+            let hfHeader = SectionHeaderView(
+                title: source.displayName,
+                count: sourceEntries.count,
+                rootPath: ModelPaths.rootPath(for: source),
+                width: rowWidth,
+                menuRef: menu,
+                sizeSortState: sortMode.sizeButtonState,
+                dateSortState: sortMode.dateButtonState,
+                showSortControls: sourceEntries.count >= 2,
+                iconName: source.iconName
+            )
+            hfHeader.onSizeSortClicked = { [weak self] in self?.toggleSizeSort(source) }
+            hfHeader.onDateSortClicked = { [weak self] in self?.toggleDateSort(source) }
+            hfH.view = hfHeader
+            items.append(hfH)
+            headerItemsBySource[source] = hfH
+
+            if sourceEntries.isEmpty {
+                let empty = disabledTextItem("No models")
+                emptyItemsBySource[source] = empty
+                items.append(empty)
+            } else {
+                let sorted = sortEntries(sourceEntries, mode: sortMode)
+                for entry in sorted {
+                    let item = makeModelItem(model: entry.model, bytes: entry.bytes, loaded: entry.loaded, width: rowWidth)
+                    rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
+                    items.append(item)
+                }
             }
         }
-
-        } // end LM Studio block
-
-        if sourcePrefs.lmStudioEnabled && sourcePrefs.huggingFaceEnabled {
-            let sep = NSMenuItem.separator()
-            middleSeparator = sep
-            items.append(sep)
-        }
-
-        // Hugging Face
-        if sourcePrefs.huggingFaceEnabled {
-        let hfH = NSMenuItem()
-        let hfHeader = SectionHeaderView(
-            title: "Hugging Face",
-            count: hfEntries.count,
-            rootPath: ModelPaths.huggingFaceRoot,
-            width: rowWidth,
-            menuRef: menu,
-            sizeSortState: hfSortMode.sizeButtonState,
-            dateSortState: hfSortMode.dateButtonState,
-            showSortControls: hfEntries.count >= 2,
-            iconName: "huggingface"
-        )
-        hfHeader.onSizeSortClicked = { [weak self] in self?.toggleSizeSort(.huggingFace) }
-        hfHeader.onDateSortClicked = { [weak self] in self?.toggleDateSort(.huggingFace) }
-        hfH.view = hfHeader
-        items.append(hfH)
-        hfHeaderItem = hfH
-
-        if hfEntries.isEmpty {
-            let empty = disabledTextItem("No models")
-            hfEmptyItem = empty
-            items.append(empty)
-        } else {
-            let sorted = sortEntries(hfEntries, mode: hfSortMode)
-            for entry in sorted {
-                let item = makeModelItem(model: entry.model, bytes: entry.bytes, loaded: entry.loaded, width: rowWidth)
-                rows.append(RowEntry(item: item, model: entry.model, bytes: entry.bytes))
-                items.append(item)
-            }
-        }
-
-        } // end HuggingFace block
 
         let totalSep = NSMenuItem.separator()
         totalSeparator = totalSep
@@ -1026,22 +968,19 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     }
 
     private func toggleSizeSort(_ source: ParsedModel.Source) {
-        let current = (source == .lmStudio) ? lmSortMode : hfSortMode
+        let current = sortModesBySource[source] ?? .name
         let next: SortMode = (current == .sizeAsc) ? .sizeDesc : .sizeAsc
         setSort(source, mode: next)
     }
 
     private func toggleDateSort(_ source: ParsedModel.Source) {
-        let current = (source == .lmStudio) ? lmSortMode : hfSortMode
+        let current = sortModesBySource[source] ?? .name
         let next: SortMode = (current == .dateOldest) ? .dateNewest : .dateOldest
         setSort(source, mode: next)
     }
 
     private func setSort(_ source: ParsedModel.Source, mode: SortMode) {
-        switch source {
-        case .lmStudio:    lmSortMode = mode
-        case .huggingFace: hfSortMode = mode
-        }
+        sortModesBySource[source] = mode
         // Sort buttons only live on Local headers — guard prevents
         // touching nil refs when the user happens to be on Explore.
         if currentTab == .local {
@@ -1050,13 +989,29 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         }
     }
 
+    /// Finds the separator or item that bounds the end of the section for this source.
+    private func findEndItem(for source: ParsedModel.Source) -> NSMenuItem? {
+        guard let header = headerItemsBySource[source] else { return nil }
+        let headerIdx = menu.index(of: header)
+        guard headerIdx >= 0 else { return nil }
+        var i = headerIdx + 1
+        while i < menu.numberOfItems {
+            let item = menu.item(at: i)
+            if item?.isSeparatorItem == true {
+                return item
+            }
+            i += 1
+        }
+        return nil
+    }
+
     /// Removes existing model rows for a section, sorts the cached entries
     /// by the current mode, and inserts fresh row items in place. Keeps
     /// the search bar, headers, separators, total row, and Quit untouched
     /// so the open menu doesn't flicker or close.
     private func reorderSection(source: ParsedModel.Source) {
-        guard let header = (source == .lmStudio) ? lmHeaderItem : hfHeaderItem else { return }
-        let endItem: NSMenuItem? = (source == .lmStudio) ? middleSeparator : indexOfTrailingSeparator()
+        guard let header = headerItemsBySource[source] else { return }
+        let endItem = findEndItem(for: source)
         let headerIdx = menu.index(of: header)
         guard headerIdx >= 0 else { return }
 
@@ -1076,16 +1031,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
 
         rows.removeAll { $0.model.source == source }
 
-        let entries = (source == .lmStudio) ? lmEntries : hfEntries
-        let mode = (source == .lmStudio) ? lmSortMode : hfSortMode
+        let entries = entriesBySource[source] ?? []
+        let mode = sortModesBySource[source] ?? .name
 
         var insertIdx = headerIdx + 1
         if entries.isEmpty {
             let empty = disabledTextItem("No models")
-            switch source {
-            case .lmStudio:    lmEmptyItem = empty
-            case .huggingFace: hfEmptyItem = empty
-            }
+            emptyItemsBySource[source] = empty
             menu.insertItem(empty, at: insertIdx)
         } else {
             let sorted = sortEntries(entries, mode: mode)
@@ -1107,59 +1059,34 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         }
     }
 
-    /// Finds the separator that sits between the HF section and the Total row.
-    private func indexOfTrailingSeparator() -> NSMenuItem? {
-        guard let hfHeader = hfHeaderItem else { return nil }
-        let hfIdx = menu.index(of: hfHeader)
-        guard hfIdx >= 0 else { return nil }
-        var i = hfIdx + 1
-        while i < menu.numberOfItems {
-            if menu.item(at: i)?.isSeparatorItem == true { return menu.item(at: i) }
-            i += 1
-        }
-        return nil
-    }
-
     private func updateHeaderSortIndicators(for source: ParsedModel.Source) {
-        let headerItem = (source == .lmStudio) ? lmHeaderItem : hfHeaderItem
+        let headerItem = headerItemsBySource[source]
         guard let view = headerItem?.view as? SectionHeaderView else { return }
-        let mode = (source == .lmStudio) ? lmSortMode : hfSortMode
+        let mode = sortModesBySource[source] ?? .name
         view.sizeButton.sortState = mode.sizeButtonState
         view.dateButton.sortState = mode.dateButtonState
     }
 
     // MARK: - Settings content
 
-    private var settingsHFToggleView: SourceToggleRowView?
-    private var settingsLMToggleView: SourceToggleRowView?
+    private var settingsToggleViews: [ParsedModel.Source: SourceToggleRowView] = [:]
 
     private func buildSettingsContent(rowWidth: CGFloat) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         items.append(makeSectionHeaderItem(text: "Sources"))
 
-        let hfRow = NSMenuItem()
-        let hfView = SourceToggleRowView(
-            width: rowWidth,
-            title: "Hugging Face",
-            isOn: sourcePrefs.huggingFaceEnabled,
-            iconName: "huggingface"
-        )
-        hfView.onToggle = { [weak self] isOn in self?.setSourceEnabled(huggingFace: isOn) }
-        hfRow.view = hfView
-        items.append(hfRow)
-        settingsHFToggleView = hfView
-
-        let lmRow = NSMenuItem()
-        let lmView = SourceToggleRowView(
-            width: rowWidth,
-            title: "LM Studio",
-            isOn: sourcePrefs.lmStudioEnabled,
-            iconName: "lmstudio"
-        )
-        lmView.onToggle = { [weak self] isOn in self?.setSourceEnabled(lmStudio: isOn) }
-        lmRow.view = lmView
-        items.append(lmRow)
-        settingsLMToggleView = lmView
+        for source in ParsedModel.Source.allCases {
+            let row = NSMenuItem()
+            let toggleView = SourceToggleRowView(
+                width: rowWidth,
+                source: source,
+                isOn: sourcePrefs.isEnabled(source)
+            )
+            toggleView.onToggle = { [weak self] isOn in self?.setSourceEnabled(source, enabled: isOn) }
+            row.view = toggleView
+            items.append(row)
+            settingsToggleViews[source] = toggleView
+        }
 
         updateSettingsToggleAvailability()
 
@@ -1256,21 +1183,17 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     /// Disables the checkbox for whichever source is the only one
     /// currently enabled, so the user can't end up with zero sources.
     private func updateSettingsToggleAvailability() {
-        let hfOnly = sourcePrefs.huggingFaceEnabled && !sourcePrefs.lmStudioEnabled
-        let lmOnly = sourcePrefs.lmStudioEnabled && !sourcePrefs.huggingFaceEnabled
-        settingsHFToggleView?.checkbox.isEnabled = !hfOnly
-        settingsLMToggleView?.checkbox.isEnabled = !lmOnly
+        let enabledSources = ParsedModel.Source.allCases.filter { sourcePrefs.isEnabled($0) }
+        let onlyOne = enabledSources.count == 1
+        
+        for source in ParsedModel.Source.allCases {
+            let isOnlyEnabled = onlyOne && enabledSources.contains(source)
+            settingsToggleViews[source]?.checkbox.isEnabled = !isOnlyEnabled
+        }
     }
 
-    private func setSourceEnabled(huggingFace: Bool) {
-        sourcePrefs.huggingFaceEnabled = huggingFace
-        sourcePrefs.save()
-        updateSettingsToggleAvailability()
-    }
-
-    private func setSourceEnabled(lmStudio: Bool) {
-        sourcePrefs.lmStudioEnabled = lmStudio
-        sourcePrefs.save()
+    private func setSourceEnabled(_ source: ParsedModel.Source, enabled: Bool) {
+        sourcePrefs.setEnabled(source, enabled: enabled)
         updateSettingsToggleAvailability()
     }
 
@@ -1337,58 +1260,111 @@ final class MenuController: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     private func applyFilter(query: String) {
         guard currentTab == .local else { return }
 
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tokens = q.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let tokens = query.split(separator: " ", omittingEmptySubsequences: true).map { $0.lowercased() }
         let empty = tokens.isEmpty
 
-        var lmVisible = 0
-        var hfVisible = 0
+        var visibleCounts: [ParsedModel.Source: Int] = [:]
+        for source in ParsedModel.Source.allCases {
+            visibleCounts[source] = 0
+        }
+
         var visibleBytes: Int64 = 0
+        var totalVisible = 0
 
         for row in rows {
             let match = empty || tokens.allSatisfy { row.model.matches($0) }
             row.item.isHidden = !match
             if match {
                 visibleBytes += row.bytes
-                switch row.model.source {
-                case .lmStudio:    lmVisible += 1
-                case .huggingFace: hfVisible += 1
-                }
+                visibleCounts[row.model.source, default: 0] += 1
+                totalVisible += 1
             }
         }
 
         let totalView = totalRowItem?.view as? TotalRowView
+        let enabledSources = ParsedModel.Source.allCases.filter { sourcePrefs.isEnabled($0) }
 
         if empty {
             // No filter — restore the unfiltered Local view.
-            lmHeaderItem?.isHidden = false
-            hfHeaderItem?.isHidden = false
-            middleSeparator?.isHidden = false
-            lmEmptyItem?.isHidden = false
-            hfEmptyItem?.isHidden = false
+            for source in ParsedModel.Source.allCases {
+                headerItemsBySource[source]?.isHidden = !sourcePrefs.isEnabled(source)
+                let sourceEntries = entriesBySource[source] ?? []
+                emptyItemsBySource[source]?.isHidden = !(sourcePrefs.isEnabled(source) && sourceEntries.isEmpty)
+            }
+            // Show separators between visible sections
+            for i in 0..<menu.numberOfItems {
+                guard let item = menu.item(at: i), item.isSeparatorItem else { continue }
+                if let contentTop = contentTopSeparator, let contentBottom = contentBottomSeparator {
+                    let idx = menu.index(of: item)
+                    let topIdx = menu.index(of: contentTop)
+                    let bottomIdx = menu.index(of: contentBottom)
+                    if idx > topIdx && idx < bottomIdx {
+                        item.isHidden = false
+                    }
+                }
+            }
             totalSeparator?.isHidden = false
             totalRowItem?.isHidden = false
             noResultsItem?.isHidden = true
             totalView?.update(bytes: visibleTotalBytes)
-        } else if lmVisible == 0 && hfVisible == 0 {
+        } else if totalVisible == 0 {
             // Search active, nothing matched — collapse the whole local
             // content area down to a single "No results found" line.
-            lmHeaderItem?.isHidden = true
-            hfHeaderItem?.isHidden = true
-            middleSeparator?.isHidden = true
-            lmEmptyItem?.isHidden = true
-            hfEmptyItem?.isHidden = true
+            for source in ParsedModel.Source.allCases {
+                headerItemsBySource[source]?.isHidden = true
+                emptyItemsBySource[source]?.isHidden = true
+            }
+            // Hide all separators within the local content area
+            for i in 0..<menu.numberOfItems {
+                guard let item = menu.item(at: i), item.isSeparatorItem else { continue }
+                if let contentTop = contentTopSeparator, let contentBottom = contentBottomSeparator {
+                    let idx = menu.index(of: item)
+                    let topIdx = menu.index(of: contentTop)
+                    let bottomIdx = menu.index(of: contentBottom)
+                    if idx > topIdx && idx < bottomIdx {
+                        item.isHidden = true
+                    }
+                }
+            }
             totalSeparator?.isHidden = true
             totalRowItem?.isHidden = true
             noResultsItem?.isHidden = false
         } else {
             // Search active with matches — show only the sections that
             // have matches and a Total reflecting the matched subset.
-            lmHeaderItem?.isHidden = (lmVisible == 0)
-            hfHeaderItem?.isHidden = (hfVisible == 0)
-            middleSeparator?.isHidden = (lmVisible == 0 || hfVisible == 0)
-            lmEmptyItem?.isHidden = true
-            hfEmptyItem?.isHidden = true
+            for source in ParsedModel.Source.allCases {
+                let hasVisible = (visibleCounts[source] ?? 0) > 0
+                headerItemsBySource[source]?.isHidden = !hasVisible
+                emptyItemsBySource[source]?.isHidden = true
+            }
+            
+            // Hide/show middle separators based on whether the adjacent sections are visible
+            for i in 0..<menu.numberOfItems {
+                guard let item = menu.item(at: i), item.isSeparatorItem else { continue }
+                if let contentTop = contentTopSeparator, let contentBottom = contentBottomSeparator {
+                    let idx = menu.index(of: item)
+                    let topIdx = menu.index(of: contentTop)
+                    let bottomIdx = menu.index(of: contentBottom)
+                    if idx > topIdx && idx < bottomIdx {
+                        var hasVisibleAbove = false
+                        var hasVisibleBelow = false
+                        for source in enabledSources {
+                            guard let header = headerItemsBySource[source] else { continue }
+                            let headerIdx = menu.index(of: header)
+                            if headerIdx < idx {
+                                if (visibleCounts[source] ?? 0) > 0 {
+                                    hasVisibleAbove = true
+                                }
+                            } else if headerIdx > idx {
+                                if (visibleCounts[source] ?? 0) > 0 {
+                                    hasVisibleBelow = true
+                                }
+                            }
+                        }
+                        item.isHidden = !(hasVisibleAbove && hasVisibleBelow)
+                    }
+                }
+            }
             totalSeparator?.isHidden = false
             totalRowItem?.isHidden = false
             noResultsItem?.isHidden = true

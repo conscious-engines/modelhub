@@ -50,11 +50,89 @@ struct ParsedModel {
     let source: Source
 
     /// Disk source the model was discovered in.
-    enum Source {
-        /// LM Studio's local model directory (`~/.lmstudio/models`).
-        case lmStudio
+    enum Source: String, CaseIterable, Codable {
         /// HuggingFace Hub cache (`~/.cache/huggingface/hub`).
-        case huggingFace
+        case huggingFace = "huggingFace"
+        /// Ollama's local model cache (`~/.ollama/models`).
+        case ollama = "ollama"
+        /// LM Studio's local model directory (`~/.lmstudio/models`).
+        case lmStudio = "lmStudio"
+        /// AnythingLLM model storage
+        case anythingLLM = "anythingLLM"
+        /// Jan.ai model storage
+        case jan = "jan"
+        /// GPT4All model storage
+        case gpt4All = "gpt4All"
+
+        var displayName: String {
+            switch self {
+            case .lmStudio: return "LM Studio"
+            case .huggingFace: return "Hugging Face"
+            case .ollama: return "Ollama"
+            case .anythingLLM: return "AnythingLLM"
+            case .jan: return "Jan.ai"
+            case .gpt4All: return "GPT4All"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .lmStudio: return "lmstudio"
+            case .huggingFace: return "huggingface"
+            case .ollama: return "ollama"
+            case .anythingLLM: return "anythingllm"
+            case .jan: return "janai"
+            case .gpt4All: return "gpt4all"
+            }
+        }
+
+        var isInstalled: Bool {
+            let fm = FileManager.default
+            switch self {
+            case .huggingFace:
+                return fm.fileExists(atPath: "/opt/homebrew/bin/huggingface-cli") ||
+                       fm.fileExists(atPath: "/usr/local/bin/huggingface-cli") ||
+                       fm.fileExists(atPath: ModelPaths.huggingFaceRoot)
+            case .ollama:
+                return fm.fileExists(atPath: "/Applications/Ollama.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/Ollama.app") ||
+                       fm.fileExists(atPath: "/usr/local/bin/ollama") ||
+                       fm.fileExists(atPath: "/opt/homebrew/bin/ollama")
+            case .lmStudio:
+                return fm.fileExists(atPath: "/Applications/LM Studio.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/LM Studio.app") ||
+                       fm.fileExists(atPath: "/Applications/LMStudio.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/LMStudio.app")
+            case .anythingLLM:
+                return fm.fileExists(atPath: "/Applications/AnythingLLM.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/AnythingLLM.app")
+            case .jan:
+                return fm.fileExists(atPath: "/Applications/Jan.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/Jan.app") ||
+                       fm.fileExists(atPath: "/Applications/Jan.ai.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/Jan.ai.app")
+            case .gpt4All:
+                return fm.fileExists(atPath: "/Applications/GPT4All.app") ||
+                       fm.fileExists(atPath: "\(NSHomeDirectory())/Applications/GPT4All.app")
+            }
+        }
+
+        var homepageURL: URL {
+            switch self {
+            case .lmStudio:
+                return URL(string: "https://lmstudio.ai")!
+            case .huggingFace:
+                return URL(string: "https://huggingface.co")!
+            case .ollama:
+                return URL(string: "https://ollama.com")!
+            case .anythingLLM:
+                return URL(string: "https://anythingllm.com")!
+            case .jan:
+                return URL(string: "https://jan.ai")!
+            case .gpt4All:
+                return URL(string: "https://gpt4all.io")!
+            }
+        }
     }
 
     /// Lowercased `publisher/repo` identifier — matches the format that
